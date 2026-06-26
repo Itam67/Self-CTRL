@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch.nn.functional as F
 from peft import PeftModel, LoraConfig, get_peft_model
 
-# ====== LoRA params ======
+# Lora hyperparameters
 LORA_R = 16
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.05
@@ -18,7 +18,7 @@ TARGET_MODULES = (
     "down_proj",
 )
 
-
+# Model loading utilities
 def load_model_tok(
     model_name,
     mode: str = "lora",
@@ -86,6 +86,7 @@ def load_model_tok(
 
     return model, tok
 
+# Tokenization utilities
 def has_chat(tokenizer) -> bool:
     return hasattr(tokenizer, "apply_chat_template")
 
@@ -129,56 +130,14 @@ def full_chat_ids(tokenizer, user_text: str, assistant_text: str) -> List[int]:
 
 
 def ensure_pad(tokenizer):
-    """Make sure PAD exists (use EOS) and return pad_id; also returns previous padding_side to restore."""
+    """Make sure pad token exists (use EOS) and return pad_id; also returns previous padding_side to restore."""
     prev = getattr(tokenizer, "padding_side", "right")
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer.pad_token_id, prev
 
 
-# ---------------------------
-# Data / Collation
-# ---------------------------
-
-
-def collate_with_rollouts(
-    tokenizer,
-    prompt: str,  # user template containing {history}
-    ctx_strs: List[str],  # insert into {history}
-    cont_strs: List[str],  # assistant continuations None if not available
-):
-    if cont_strs is None:
-        cont_strs = [None] * len(ctx_strs)
-    elif len(ctx_strs) != len(cont_strs):
-        raise ValueError(
-            f"ctx vs cont length mismatch: {len(ctx_strs)} != {len(cont_strs)}"
-        )
-
-    concat_ids = []
-    prefix_lens = []
-
-    for ctx, cont in zip(ctx_strs, cont_strs):
-        user_text = prompt.format(history=ctx or "")
-        prefix = chat_prefix_ids(tokenizer, user_text)  # up to assistant header
-
-        if cont is None:  # no continuation available
-            cont_ids = []
-        else:
-            cont_ids = tokenizer(cont, add_special_tokens=False)["input_ids"]
-
-        concat_ids.append(torch.tensor(prefix + cont_ids, dtype=torch.long))
-        prefix_lens.append(len(prefix))
-
-    batch = tokenizer.pad({"input_ids": concat_ids}, return_tensors="pt")
-    input_ids = batch["input_ids"]
-    attn = batch["attention_mask"]
-    labels = input_ids.clone()
-    for i, Lp in enumerate(prefix_lens):
-        labels[i, :Lp] = -100
-    labels[attn == 0] = -100
-    return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
-
-
+# Generation utilities
 def sample_conts_gen(
     model,
     tokenizer,
@@ -191,6 +150,7 @@ def sample_conts_gen(
     system_prompts: Optional[List[Optional[str]]] = None,
 ) -> Tuple[List[str], List[float], Optional[Dict[str, Any]]]:
 
+    # Check that a system prompt exists for each prompt if provided
     if system_prompts is not None:
         assert len(system_prompts) == len(prompts)
 
@@ -224,9 +184,11 @@ def sample_conts_gen(
     pad_id, _ = ensure_pad(tokenizer)
     tokenizer.padding_side = "left"
 
+    # Get the tokenized inputs
     enc = tokenizer(prompt_text, return_tensors="pt", padding=True).to(model.device)
     padded_input_len = enc["input_ids"].shape[1]
 
+    # Generate continuations
     with torch.no_grad():
         out = model.generate(
             **enc,
@@ -244,7 +206,6 @@ def sample_conts_gen(
 
     sequences = out.sequences
     eos_id = tokenizer.eos_token_id
-    pad_id = tokenizer.pad_token_id
 
     # Decode continuations
     continuations = []
@@ -282,42 +243,6 @@ def sample_conts_gen(
 
     return continuations, avg_logps, extras
 
-
-def save_embed_rows(model, ids, path):
-    """
-    Save absolute weights for specified embedding rows.
-    """
-    W = model.get_input_embeddings().weight.detach().cpu()
-    idx = torch.as_tensor(sorted(set(int(i) for i in ids)), dtype=torch.long)
-    payload = {"ids": idx, "weights": W.index_select(0, idx)}
-    torch.save(payload, path)
-
-
-def load_apply_embed_rows(model, path, apply_to_lm_head=False):
-    """
-    Load row patch and write into model's input embeddings.
-    If embeddings are untied and apply_to_lm_head=True, also patch lm_head rows.
-    """
-    pay = torch.load(path, map_location="cpu")
-    W = model.get_input_embeddings().weight
-    ids = pay["ids"].to(W.device)
-    vals = pay["weights"].to(dtype=W.dtype, device=W.device)
-
-    # sanity: ensure tokenizer length matches
-    if vals.shape[1] != W.shape[1]:
-        raise ValueError(
-            f"Dim mismatch: patch dim {vals.shape[1]} vs emb dim {W.shape[1]}"
-        )
-
-    with torch.no_grad():
-        W.index_copy_(0, ids, vals)
-
-        tied = getattr(model.config, "tie_word_embeddings", True)
-        if apply_to_lm_head and (not tied) and hasattr(model, "lm_head"):
-            WO = model.get_output_embeddings().weight
-            WO.index_copy_(0, ids, vals.to(dtype=WO.dtype, device=WO.device))
-
-
 @torch.no_grad()
 def sample_k_conts_gen(
     model,
@@ -347,13 +272,8 @@ def sample_k_conts_gen(
     """
 
     assert k >= 1
-    model.eval()
 
-    if seed is not None:
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-
+    # Check that a system prompt exists for each prompt if provided
     if system_prompts is not None:
         assert len(system_prompts) == len(prompts)
 
@@ -419,13 +339,12 @@ def sample_k_conts_gen(
         sequences = out.sequences  # (B*k, padded_input_len + Tgen)
         Bk = sequences.shape[0]
 
-        # ---- Decode continuations ----
+        # Decode continuations
         cont_ids = sequences[:, padded_input_len:]  # only generated tokens
         conts_flat = tokenizer.batch_decode(cont_ids, skip_special_tokens=True)
         conts_flat = [c.strip() for c in conts_flat]
 
-        # ---- Compute mean log-prob over generated continuation ----
-        # out.scores: list length Tgen, each (B*k, V)
+        # Compute mean log-prob over generated continuation
         scores = torch.stack(out.scores, dim=1).float()  # (B*k, Tgen, V)
         logprobs = F.log_softmax(scores, dim=-1)  # (B*k, Tgen, V)
         Tgen = logprobs.shape[1]
@@ -449,13 +368,13 @@ def sample_k_conts_gen(
                 float(vp.mean().item()) if vp.numel() else float("-inf")
             )
 
-        # ---- Group back to [B][k] ----
-        # HF ordering with num_return_sequences=k is:
-        # prompt0 sample0..k-1, prompt1 sample0..k-1, ...
+        # Group back to [B][k]
         for b in range(B):
             s, e = b * k, (b + 1) * k
             all_conts.append(conts_flat[s:e])
             all_avg_logps.append(avg_logps_flat[s:e])
 
+    # Restore original padding side
     tokenizer.padding_side = old_side
+
     return all_conts, all_avg_logps
