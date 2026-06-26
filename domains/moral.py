@@ -939,8 +939,8 @@ def full_eval(model, tokenizer, val_loader, device, cfg, extra):
 
 ### Main entry point for training ###
 @hydra.main(
-    config_path="/data/lingo/ipres/projects/sample_consistency/configs",
-    config_name="moral_cons",
+    config_path="../configs",
+    config_name="moral",
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:
