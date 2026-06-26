@@ -209,7 +209,6 @@ class ConsistencyTrainer:
                 total_untouched_kl_sum = 0.0
                 total_untouched_kl_beh_sum = 0.0
                 total_untouched_kl_expl_sum = 0.0
-                total_entropy_sum = 0.0
 
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -438,10 +437,7 @@ class ConsistencyTrainer:
                         log_payload["train/untouched_kl_expl"] = (
                             total_untouched_kl_expl_sum / max(N, 1)
                         )
-                    if float(getattr(self.cfg.learning, "entropy_beta", 0.0)) > 0:
-                        log_payload["train/token_entropy"] = total_entropy_sum / max(
-                            N, 1
-                        )
+
                     wandb.log(log_payload, step=examples_seen)
 
                 # Evaluate and save checkpoint

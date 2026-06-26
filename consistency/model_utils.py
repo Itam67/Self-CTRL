@@ -3,6 +3,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Any, Dict, List, Optional, Tuple
 import torch.nn.functional as F
 from peft import PeftModel, LoraConfig, get_peft_model
+from consistency.data_utils import collate_prompt_output
 
 # Lora hyperparameters
 LORA_R = 16
@@ -17,6 +18,7 @@ TARGET_MODULES = (
     "up_proj",
     "down_proj",
 )
+
 
 # Model loading utilities
 def load_model_tok(
@@ -44,9 +46,8 @@ def load_model_tok(
     # load the tokenizer
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tok.pad_token_id is None:
-        tok.pad_token = tok.eos_token 
+        tok.pad_token = tok.eos_token
 
-    
     # load the base model
     model = AutoModelForCausalLM.from_pretrained(
         model_name, torch_dtype=torch.bfloat16, device_map="auto"
@@ -66,7 +67,6 @@ def load_model_tok(
 
         return model, tok
 
-
     # initialize a new LoRA adapter on top of the base model
     elif mode == "lora":
         lcfg = LoraConfig(
@@ -80,11 +80,11 @@ def load_model_tok(
         model = get_peft_model(model, lcfg)
         model.print_trainable_parameters()
 
-
     else:
         raise ValueError("MODE must be 'full' or 'lora'.")
 
     return model, tok
+
 
 # Tokenization utilities
 def has_chat(tokenizer) -> bool:
@@ -174,8 +174,7 @@ def sample_conts_gen(
     else:
         if system_prompts is not None:
             prompt_text = [
-                (f"{s}\n\n{p}" if s else p)
-                for s, p in zip(system_prompts, prompts)
+                (f"{s}\n\n{p}" if s else p) for s, p in zip(system_prompts, prompts)
             ]
         else:
             prompt_text = prompts
@@ -243,6 +242,7 @@ def sample_conts_gen(
 
     return continuations, avg_logps, extras
 
+
 @torch.no_grad()
 def sample_k_conts_gen(
     model,
@@ -297,8 +297,7 @@ def sample_k_conts_gen(
     else:
         if system_prompts is not None:
             prompt_text = [
-                (f"{s}\n\n{p}" if s else p)
-                for s, p in zip(system_prompts, prompts)
+                (f"{s}\n\n{p}" if s else p) for s, p in zip(system_prompts, prompts)
             ]
         else:
             prompt_text = prompts
@@ -378,3 +377,108 @@ def sample_k_conts_gen(
     tokenizer.padding_side = old_side
 
     return all_conts, all_avg_logps
+
+
+def compute_nll(
+    model,
+    tokenizer,
+    prompts: List[str],
+    continuations: List[str],
+    device: torch.device,
+    system_prompt: Optional[str] = None,
+) -> torch.Tensor:
+    """
+    Flexible NLL computation. Supports three calling patterns:
+
+      1) One prompt, K continuations (for collecting actions/behaviors):
+         prompts=["p1", "p2"],  continuations=[["c1","c2"], ["c3","c4"]]
+
+      2) K prompts, one continuation (for phi_moral):
+         prompts=[["p1","p2"], ["p3","p4"]],  continuations=["c1", "c2"]
+
+      3) K prompts, K continuations (fully paired):
+         prompts=[["p1","p2"]], continuations=[["c1","c2"]]
+
+    If `system_prompt` is provided, it's prepended as a system-role message for
+    every row (same value for all prompts in this call). This must match the
+    system prompt used at generation time for NLLs to be consistent.
+
+    Returns:
+      per_sample_nll: torch.Tensor [B, K]
+    """
+    B = len(prompts)
+    assert B == len(continuations), f"Batch mismatch: {B} vs {len(continuations)}"
+
+    # Normalize both to List[List[str]]
+    if isinstance(prompts[0], str):
+        prompts = [[p] for p in prompts]
+    if isinstance(continuations[0], str):
+        continuations = [[c] for c in continuations]
+
+    per_group = []
+
+    for prompt_group, cont_group in zip(prompts, continuations):
+        Kp, Kc = len(prompt_group), len(cont_group)
+
+        # Broadcast whichever side is length 1
+        if Kp == 1 and Kc > 1:
+            prompt_group = prompt_group * Kc
+        elif Kc == 1 and Kp > 1:
+            cont_group = cont_group * Kp
+        elif Kp != Kc:
+            raise ValueError(
+                f"Cannot broadcast prompts ({Kp}) with continuations ({Kc})"
+            )
+
+        K = len(prompt_group)
+        sys_list = [system_prompt] * K if system_prompt else None
+        batch = collate_prompt_output(
+            tokenizer, prompt_group, cont_group, system_prompts=sys_list
+        )
+        batch = {k: v.to(device) for k, v in batch.items()}
+        labels = batch["labels"]
+
+        logits = model(**batch, use_cache=False).logits
+
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+
+        token_nll = F.cross_entropy(
+            shift_logits.transpose(1, 2),
+            shift_labels,
+            ignore_index=-100,
+            reduction="none",
+        )
+
+        mask = shift_labels.ne(-100)
+        denom = mask.sum(dim=1).clamp_min(1)
+        per_sample_nll = (token_nll * mask).sum(dim=1) / denom  # [K]
+
+        per_group.append(per_sample_nll)
+
+    if len(per_group) == 0:
+        return torch.empty((0, 0), device=device)
+
+    return torch.stack(per_group, dim=0)  # [B, K]
+
+
+def cont_training_loss(model, tokenizer, prompts, completions, device, max_length=512):
+    """
+    Compute standard SFT cross-entropy loss on (prompt, completion) pairs.
+
+    Signature matches the reg_loss_fn interface:
+      reg_loss_fn(model, tokenizer, prompts, completions, device) -> scalar tensor
+
+    Only assistant (completion) tokens contribute to the loss; prompt tokens
+    are masked via collate_prompt_output.
+    """
+    batch = collate_prompt_output(
+        tokenizer, prompts, completions, max_length=max_length
+    )
+    batch = {k: v.to(device) for k, v in batch.items()}
+
+    out = model(**batch, use_cache=False)
+    loss = out.loss  # HF token-mean NLL over non-masked tokens
+    if torch.isnan(loss):
+        return torch.tensor(0.0, device=device, requires_grad=True)
+    return loss
