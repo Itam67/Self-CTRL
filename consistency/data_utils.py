@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
@@ -139,7 +139,7 @@ def collate_prompt_output(
     }
 
 
-def load_cont_training_data(cfg, seed=42, split="train"):
+def load_cont_training_data(cfg, seed=42, split="train") -> Tuple[List[str], List[str]]:
     """
     Load an instruction-tuning dataset and return parallel lists
     (prompts, completions).

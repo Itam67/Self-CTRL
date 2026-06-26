@@ -1,0 +1,32 @@
+model_name: meta-llama/Llama-3.1-8B-Instruct
+mode: lora
+seed: 42
+verbose_logging: true
+
+learning:
+  lr: 1e-5
+  epochs: 5
+  batch_size: 10
+  micro_batch_size: 1
+  save_every: 200
+  save_dir: /data/lingo/ipres/projects/Self-CTRL/models/moral/test
+  bw: 1.0
+  cont_training_loss_weight: 0.25
+
+sampling:
+  n_beams: 8
+  num_cands: 8
+  max_new_tokens: 150
+  temp: 1.0
+  top_p: 0.9
+
+cont_training:
+  dataset: nvidia/Nemotron-SFT-Instruction-Following-Chat-v2
+  split: reasoning_off
+  max_examples: 5000
+  single_turn_only: true
+  max_completion_tokens: 256
+
+wandb:
+  project: moral_spec
+  run_name: initial_cons_run
