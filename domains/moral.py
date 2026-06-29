@@ -53,7 +53,7 @@ def _set_seed(seed: Optional[int]) -> Optional[torch.Generator]:
 
 
 ### Moral-specific implementations ###
-def load_data_spec_eval(cfg, explanation_mode: str = "default") -> tuple:
+def load_data_spec_eval(cfg) -> tuple:
     """
     Loads the moral evaluation dataset and returns DataLoaders for training and validation.
 
@@ -69,10 +69,8 @@ def load_data_spec_eval(cfg, explanation_mode: str = "default") -> tuple:
         cont_training_data = load_cont_training_data(cfg, seed=int(cfg.seed))
 
     # Create consistency datasets for training and validation
-    train_ds = make_spec_eval_dataset("train", cfg, explanation_mode=explanation_mode)
-    val_ds = make_spec_eval_dataset(
-        "val", cfg, max_samples=100, explanation_mode=explanation_mode
-    )
+    train_ds = make_spec_eval_dataset("train", cfg)
+    val_ds = make_spec_eval_dataset("val", cfg, max_samples=100)
 
     # Add continual training data to the training dataset if available
     if cont_training_data is not None:
