@@ -526,7 +526,9 @@ def verbose_logging_moral(
     for i in range(len(behavior_prompts)):
         print("=" * 80)
         print(f"  Prompt: {behavior_prompts[i]}")
-        print(f"  GT Category: {prompt_to_principle.get(behavior_prompts[i], '?')}")
+        print(
+            f"  Request Category: {prompt_to_principle.get(behavior_prompts[i], '?')}"
+        )
 
         if k_behaviors:
             _print_candidates(

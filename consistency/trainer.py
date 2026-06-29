@@ -181,7 +181,7 @@ class ConsistencyTrainer:
                 print(f"wandb.init failed: {e}")
 
         # Initial evaluation
-        self._evaluate(examples_seen)
+        # self._evaluate(examples_seen)
 
         # Training loop
         self.model.train()
@@ -262,7 +262,7 @@ class ConsistencyTrainer:
                             _,
                             explanation_advantages,
                             explanation_rewards,
-                        ) = self._reinforce_loss(
+                        ) = self._grpo_loss(
                             explanations,  # [B][K]
                             explanations_nlls,  # [B, K] — gradients flow here
                             best_behaviors,  # [B]
@@ -282,7 +282,7 @@ class ConsistencyTrainer:
                             [explanations[i][best_expl_idx[i].item()]] for i in range(B)
                         ]  # [B][1]
                         behavior_loss, _, behavior_advantages, behavior_rewards = (
-                            self._reinforce_loss(
+                            self._grpo_loss(
                                 best_explanations,  # [B][1]
                                 behavior_nlls,  # [B, K] or [B, 1] — gradients flow here
                                 behaviors,  # [B][K] or [B]
