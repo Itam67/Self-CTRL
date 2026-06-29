@@ -9,8 +9,8 @@ learning:
   batch_size: 10
   micro_batch_size: 1
   save_every: 200
-  save_dir: /data/lingo/ipres/projects/Self-CTRL/models/moral/test
-  bw: 1.0
+  save_dir: /data/lingo/ipres/projects/Self-CTRL/models/moral/explanation_training
+  bw: 0.0
   cont_training_loss_weight: 0.25
 
 sampling:
@@ -28,5 +28,5 @@ cont_training:
   max_completion_tokens: 256
 
 wandb:
-  project: moral_spec
-  run_name: initial_cons_run
+  project: const_consistency
+  run_name: explanation_training
