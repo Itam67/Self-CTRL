@@ -3,6 +3,11 @@ import random
 from datasets import load_dataset
 import os
 import json
+from pathlib import Path
+
+# Spec-eval split JSONs live here; anchored to the repo root so it resolves
+# regardless of the working directory hydra switches to at runtime.
+_SPEC_EVAL_DIR = Path(__file__).resolve().parents[1] / "data" / "moral"
 
 
 class MoralDataset(torch.utils.data.Dataset):
@@ -313,7 +318,7 @@ def make_spec_eval_dataset(
     split,
     cfg=None,
     max_samples=None,
-    data_dir="data/moral/spec_eval/",
+    data_dir=None,
 ):
     """
     Load Spec Eval examples from pre-split JSON files.
@@ -322,7 +327,9 @@ def make_spec_eval_dataset(
         split: 'train', 'val', or 'holdout'
     """
 
-    path = os.path.join(data_dir, f"{split}.json")
+    if data_dir is None:
+        data_dir = _SPEC_EVAL_DIR
+    path = os.path.join(str(data_dir), f"{split}.json")
     with open(path, "r") as f:
         data = json.load(f)
 
