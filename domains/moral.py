@@ -1007,7 +1007,7 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         optimizer=optim,
         device=device,
-        cfg=cfg,
+        train_cfg=cfg,
         cons_cfg=cons_cfg,
     )
 

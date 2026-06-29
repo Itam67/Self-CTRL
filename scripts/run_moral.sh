@@ -18,10 +18,15 @@
 
 # ---- Edit these ----
 REPO=/data/lingo/ipres/projects/Self-CTRL
-ENV=<YOUR_CONDA_ENV>
+ENV="CHANGE_ME"   # your conda env name
 # --------------------
 
 set -euo pipefail
+
+if [ "$ENV" = "CHANGE_ME" ]; then
+    echo "Edit ENV in $0 to your conda env name first." >&2
+    exit 1
+fi
 
 cd "$REPO"
 mkdir -p slurm_logs
