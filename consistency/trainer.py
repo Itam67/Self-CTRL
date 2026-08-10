@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 from typing import Callable, Optional
-import wandb
 from pathlib import Path
 from omegaconf import OmegaConf
 import torch
 
 try:
+    import wandb
+
     _WANDB_AVAILABLE = True
 except Exception:
     _WANDB_AVAILABLE = False
@@ -150,6 +151,7 @@ class ConsistencyTrainer:
 
     def train(self):
         """Main training loop."""
+        global _WANDB_AVAILABLE
 
         epochs = int(self.cfg.learning.epochs)
         examples_seen = int(getattr(self.cfg.learning, "examples_seen_start", 0) or 0)
@@ -178,7 +180,10 @@ class ConsistencyTrainer:
                 wandb.define_metric("train/*", step_metric="train/examples_seen")
                 wandb.define_metric("holdout/*", step_metric="train/examples_seen")
             except Exception as e:
-                print(f"wandb.init failed: {e}")
+                # Without this the run stays "available" but has no active run,
+                # and the first wandb.log below raises and kills training.
+                _WANDB_AVAILABLE = False
+                print(f"wandb.init failed, continuing without logging: {e}")
 
         # Initial evaluation
         # self._evaluate(examples_seen)

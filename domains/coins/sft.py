@@ -190,6 +190,7 @@ def train(model, tokenizer, train_loader, val_loader, optim, coins, biases, devi
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:
+    global _WANDB_AVAILABLE
 
     _set_seed(int(cfg.seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -202,7 +203,10 @@ def main(cfg: DictConfig) -> None:
                 config=OmegaConf.to_container(cfg, resolve=True),
             )
         except Exception as exc:
-            print(f"wandb.init failed: {exc}")
+            # Without this the log sites below still fire with no active run,
+            # and wandb.log raises.
+            _WANDB_AVAILABLE = False
+            print(f"wandb.init failed, continuing without logging: {exc}")
 
     load_dir = getattr(cfg, "load_dir", None) or None
     model, tokenizer = load_model_tok(
