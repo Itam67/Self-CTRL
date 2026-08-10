@@ -1,0 +1,24 @@
+# Explanation training, λ=0 — the paper's `bw0.0_reg0.0_aux0_ukl0.1` run.
+#
+#     python domains/moral.py
+#
+# Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
+defaults:
+  - moral
+  - _self_
+
+learning:
+  bw: 0.0
+  cont_training_loss_weight: 0.0
+  auxiliary_weight: 0.0
+  untouched_side_kl_weight: 0.1
+  save_dir: models/moral/bw0.0_cont0.0_aux0.0_ukl0.1
+  results_dir: results/moral/bw0.0_cont0.0_aux0.0_ukl0.1
+
+# The paper's explanation run trains with no continued-training loss, so the
+# SFT data is switched off entirely rather than weighted to zero (the trainer
+# computes the loss whenever the data is present).
+cont_training: null
+
+wandb:
+  run_name: bw0.0_cont0.0_aux0.0_ukl0.1

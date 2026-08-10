@@ -940,7 +940,7 @@ def full_eval(model, tokenizer, val_loader, device, cfg, extra):
 ### Main entry point for training ###
 @hydra.main(
     config_path="../configs",
-    config_name="moral",
+    config_name="moral_expl",
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:

@@ -1,17 +1,65 @@
+# Shared base for every moral run. NOT runnable on its own — the five keys left
+# as `???` below are set by the per-condition configs that inherit this file:
+#
+#   moral_expl.yaml            explanation training, λ=0
+#   moral_mixed.yaml           mixed training,       λ=0.5
+#   moral_beh.yaml             behavior training,    λ=1.0
+#   moral_baseline_expl.yaml   introspective baseline, explanation side
+#   moral_baseline_beh.yaml    introspective baseline, behavior side
+#
+# Everything here is the paper's default. Change a setting once here and it
+# applies to all five conditions.
+#
+# All paths are relative to the repo root, and hydra is set not to chdir (see
+# the bottom of this file), so run from the checkout and models/ + results/ land
+# inside it.
 model_name: meta-llama/Llama-3.1-8B-Instruct
 mode: lora
 seed: 42
 verbose_logging: true
 
+# Warm start: path to an adapter to resume from. Null trains a fresh adapter.
+load_dir: null
+
+# Ablation — replace the 8-framework ethical jury with a single neutral judge.
+# The paper's main runs use the full jury.
+single_judge: false
+
 learning:
   lr: 1e-5
   epochs: 5
   batch_size: 10
-  micro_batch_size: 1
-  save_every: 200
-  save_dir: /data/lingo/ipres/projects/Self-CTRL/models/moral/explanation_training
-  bw: 0.0
-  cont_training_loss_weight: 0.25
+  micro_batch_size: 1      # grad accumulation steps = batch_size // micro_batch_size
+  save_every: 200          # eval + checkpoint interval, in examples seen
+
+  # Warm start: step counter to resume from, so W&B/eval/save timelines continue
+  # rather than restarting at 0. Set to the resumed checkpoint's step.
+  examples_seen_start: 0
+
+  # --- Set per condition (see the configs listed above) ---------------------
+  # Adapters (large; keep out of git). Its basename is the run slug.
+  save_dir: ???
+  # Eval snapshots + per-checkpoint metrics (small; the figures read these).
+  results_dir: ???
+
+  # λ — which side is updated. 0 = explanation only, 1 = behavior only,
+  # in between = both, weighted.
+  bw: ???
+
+  # Weight on the continued-training (SFT) loss that holds general capability in
+  # place. The `cont_training` block below supplies its data; a config that sets
+  # this to 0 should also null that block out, since the trainer computes the
+  # loss whenever the data is present and would otherwise just multiply it by 0.
+  cont_training_loss_weight: ???
+
+  # Weight on the auxiliary engagement signal mixed into the jury reward.
+  # 0 = pure consistency reward.
+  auxiliary_weight: ???
+
+  # Weight on the KL anchor holding the side that ISN'T being updated near the
+  # base policy. Distinct from cont_training — see domains/moral.py.
+  untouched_side_kl_weight: ???
+  # -------------------------------------------------------------------------
 
 sampling:
   n_beams: 8
@@ -20,13 +68,22 @@ sampling:
   temp: 1.0
   top_p: 0.9
 
+# Continued-training (SFT) data. Set `cont_training: null` in a condition that
+# runs with cont_training_loss_weight = 0.
 cont_training:
   dataset: nvidia/Nemotron-SFT-Instruction-Following-Chat-v2
-  split: reasoning_off
+  split: reasoning_off       # this dataset has reasoning_off / reasoning_on
   max_examples: 5000
   single_turn_only: true
   max_completion_tokens: 256
 
 wandb:
   project: const_consistency
-  run_name: explanation_training
+  run_name: ???              # set per condition; matches the save_dir basename
+
+# Keep the process in the repo root so the relative paths above resolve against
+# the checkout rather than a per-run output dir. (Default for version_base=None
+# on Hydra >=1.2, set explicitly so it can't drift.)
+hydra:
+  job:
+    chdir: false

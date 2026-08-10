@@ -1,0 +1,19 @@
+# Behavior training, λ=1.0 — behavior side only. The paper's `bw1.0_reg0.25_aux0.4_ukl0.1` run.
+#
+#     python domains/moral.py --config-name moral_beh
+#
+# Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
+defaults:
+  - moral
+  - _self_
+
+learning:
+  bw: 1.0
+  cont_training_loss_weight: 0.25
+  auxiliary_weight: 0.4
+  untouched_side_kl_weight: 0.1
+  save_dir: models/moral/bw1.0_cont0.25_aux0.4_ukl0.1
+  results_dir: results/moral/bw1.0_cont0.25_aux0.4_ukl0.1
+
+wandb:
+  run_name: bw1.0_cont0.25_aux0.4_ukl0.1

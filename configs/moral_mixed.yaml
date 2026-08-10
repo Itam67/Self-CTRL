@@ -1,0 +1,19 @@
+# Mixed training, λ=0.5 — both sides updated. The paper's `bw0.5_reg0.25_aux0.4_ukl0.0` run.
+#
+#     python domains/moral.py --config-name moral_mixed
+#
+# Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
+defaults:
+  - moral
+  - _self_
+
+learning:
+  bw: 0.5
+  cont_training_loss_weight: 0.25
+  auxiliary_weight: 0.4
+  untouched_side_kl_weight: 0.0
+  save_dir: models/moral/bw0.5_cont0.25_aux0.4_ukl0.0
+  results_dir: results/moral/bw0.5_cont0.25_aux0.4_ukl0.0
+
+wandb:
+  run_name: bw0.5_cont0.25_aux0.4_ukl0.0

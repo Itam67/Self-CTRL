@@ -1,0 +1,94 @@
+# Figure manifest — moral domain, Llama family.
+#
+# The single source of truth for "which runs are in the paper". All four figure
+# scripts read this file:
+#     python -m evals.plot_consistency_curves      (consistency over training)
+#     python -m evals.plot_safety_sim              (safety vs. simulatability / Pareto)
+#     python -m evals.plot_capabilities            (WildChat + MMLU)
+#     python -m evals.plot_cf                      (counterfactual consistency)
+#
+# >>> EDIT run_dir / ckpt TO POINT AT YOUR OWN RUNS. <<<
+# run_dir is the run's slug — the basename shared by its two trees:
+#   <models_root>/<run_dir>/ckpt_<step>/   adapters   (trainer save_dir)
+#   <results_root>/<run_dir>/              metrics    (trainer results_dir)
+# It matches the save_dir/results_dir basename in that condition's training
+# config, noted beside each entry. ckpt is the run's headline checkpoint — the
+# step the figures report; the values below are PLACEHOLDERS, set them to your
+# own checkpoints.
+
+model_name: meta-llama/Llama-3.1-8B-Instruct
+
+models_root: models/moral
+results_root: results/moral
+figures_dir: results/final_figures
+
+# Eval settings. These feed the ensure_* helpers in evals/manifest.py; changing
+# n_prompts or cf_model changes the cf filename the figure looks for, so keep
+# them in sync with however the evals were actually run.
+eval:
+  harmbench:
+    max_prompts: 200
+    judge_model: gemini-2.5-flash
+    seed: 42
+  wildchat:
+    max_prompts: 300
+    judge_model: gemini-2.5-flash
+    seed: 42
+  mmlu:
+    max_questions: 200
+    seed: 42
+  nsg:
+    gemini_model: gemini-2.5-flash
+    gen_batch_size: 8
+  cf:
+    cf_model: gemini-2.5-flash
+    judge_model: gemini-2.5-flash
+    n_prompts: 10
+    gen_batch_size: 8
+
+# One entry per bar / scatter point. `role` drives the color and marker in every
+# figure (base | expl | mixed | beh | expl_baseline | beh_baseline); the order
+# here is the left-to-right order in the bar figures.
+conditions:
+  - label: "Base"
+    role: base
+    # No run_dir: the untrained base model. Its metrics are shared across
+    # figures at results_root/_base_evals/<model_slug>/.
+
+  - label: "Expl.\nbaseline"
+    role: expl_baseline
+    run_dir: baseline_expl_cont0.25_ukl0.1   # configs/moral_baseline_expl.yaml
+    ckpt: 2202
+
+  - label: "Beh.\nbaseline"
+    role: beh_baseline
+    run_dir: baseline_beh_cont0.25_ukl0.1    # configs/moral_baseline_beh.yaml
+    ckpt: 3404
+
+  - label: "Expl. training\n(λ=0)"
+    role: expl
+    run_dir: bw0.0_cont0.0_aux0.0_ukl0.1     # configs/moral_expl.yaml
+    ckpt: 2808
+
+  - label: "Mixed\n(λ=0.5)"
+    role: mixed
+    run_dir: bw0.5_cont0.25_aux0.4_ukl0.0    # configs/moral_mixed.yaml
+    ckpt: 3604
+
+  - label: "Beh. training\n(λ=1.0)"
+    role: beh
+    run_dir: bw1.0_cont0.25_aux0.4_ukl0.1    # configs/moral_beh.yaml
+    ckpt: 3604
+
+# Panels of the consistency-curves figure. These are whole RUNS (curves over
+# training), not single checkpoints, so they're listed separately from the
+# conditions above, and they read <results_root>/<run_dir>/eval_snapshots/.
+# A panel may list several run dirs; they are merged step-by-step (earlier wins
+# on overlap) so a continuation run extends the curve.
+panels:
+  - title: "Explanation training"
+    run_dirs: [bw0.0_cont0.0_aux0.0_ukl0.1]
+  - title: "Mixed training"
+    run_dirs: [bw0.5_cont0.25_aux0.4_ukl0.0]
+  - title: "Behavior training"
+    run_dirs: [bw1.0_cont0.25_aux0.4_ukl0.1]

@@ -1,0 +1,26 @@
+# Introspective baseline, explanation side (λ=0) — the paper's `baseline_expl_reg0.25_ukl0.1` run.
+#
+#     python domains/moral_baseline.py
+#
+# Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
+#
+# Trained by domains/moral_baseline.py: the reward is the frozen base policy's
+# own self-report with the other side absent from the judge's context, which is
+# the only difference from the runs above. `auxiliary_weight` stays 0 — the
+# unary baseline rewards have no engagement term, and the trainer raises rather
+# than silently ignoring a nonzero value.
+
+defaults:
+  - moral
+  - _self_
+
+learning:
+  bw: 0.0
+  cont_training_loss_weight: 0.25
+  auxiliary_weight: 0.0
+  untouched_side_kl_weight: 0.1
+  save_dir: models/moral/baseline_expl_cont0.25_ukl0.1
+  results_dir: results/moral/baseline_expl_cont0.25_ukl0.1
+
+wandb:
+  run_name: baseline_expl_cont0.25_ukl0.1
