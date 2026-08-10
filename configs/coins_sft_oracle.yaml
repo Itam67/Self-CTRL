@@ -1,0 +1,13 @@
+# Coins oracle stage:  python domains/coins/sft.py --config-name coins_sft_oracle
+defaults:
+  - coins_sft
+  - _self_
+
+data:
+  train_file: oracle_train.jsonl
+  val_file: oracle_val.jsonl
+
+save_dir: models/coins/oracle
+
+wandb:
+  run_name: coins_sft_oracle

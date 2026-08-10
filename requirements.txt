@@ -7,3 +7,14 @@ torch==1.10.0
 transformers==4.10.0
 wandb==0.28.0
 accelerate
+
+# Figures + manifest (evals/plot_*.py, evals/manifest.py). Plotting needs no
+# torch, so these alone are enough to re-render a figure with --plot-only.
+matplotlib
+pyyaml
+
+# Gemini judge used by the refusal / counterfactual / simulatability evals
+# (evals/judges.py). Needs ADC: `gcloud auth application-default login` plus
+# GOOGLE_CLOUD_PROJECT.
+google-genai
+tqdm

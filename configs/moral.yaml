@@ -57,7 +57,7 @@ learning:
   auxiliary_weight: ???
 
   # Weight on the KL anchor holding the side that ISN'T being updated near the
-  # base policy. Distinct from cont_training — see domains/moral.py.
+  # base policy. Distinct from cont_training — see domains/moral/train.py.
   untouched_side_kl_weight: ???
   # -------------------------------------------------------------------------
 

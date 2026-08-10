@@ -2,10 +2,10 @@
 #
 # The single source of truth for "which runs are in the paper". All four figure
 # scripts read this file:
-#     python -m evals.plot_consistency_curves      (consistency over training)
-#     python -m evals.plot_safety_sim              (safety vs. simulatability / Pareto)
-#     python -m evals.plot_capabilities            (WildChat + MMLU)
-#     python -m evals.plot_cf                      (counterfactual consistency)
+#     python -m evals.moral.plot_consistency_curves      (consistency over training)
+#     python -m evals.moral.plot_safety_sim              (safety vs. simulatability / Pareto)
+#     python -m evals.moral.plot_capabilities            (WildChat + MMLU)
+#     python -m evals.moral.plot_cf                      (counterfactual consistency)
 #
 # >>> EDIT run_dir / ckpt TO POINT AT YOUR OWN RUNS. <<<
 # run_dir is the run's slug — the basename shared by its two trees:

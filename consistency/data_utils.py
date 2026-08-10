@@ -1,6 +1,25 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from datasets import load_dataset
 from transformers import AutoTokenizer
+
+
+# Prompt formatting helpers
+def build_prompt_text(tokenizer, system: Optional[str], user: str) -> str:
+    """Return the prompt-only text using the tokenizer's chat template."""
+    if hasattr(tokenizer, "apply_chat_template"):
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    if system:
+        return f"{system}\n\n{user}"
+    return user
 
 
 def collate_prompt_output(
@@ -33,26 +52,14 @@ def collate_prompt_output(
     def _sys(i):
         return system_prompts[i] if system_prompts is not None else None
 
-    # Build chat template texts (strings) or plain texts
-    if hasattr(tokenizer, "apply_chat_template"):
-        # Prompt-only texts
-        prompt_texts = []
-        for i, p in enumerate(prompts):
-            messages = []
-            sys_p = _sys(i)
-            if sys_p:
-                messages.append({"role": "system", "content": sys_p})
-            messages.append({"role": "user", "content": p})
-            prompt_texts.append(
-                tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            )
+    # Prompt-only texts (chat template if available, plain text otherwise)
+    prompt_texts = [
+        build_prompt_text(tokenizer, _sys(i), p) for i, p in enumerate(prompts)
+    ]
 
-        # Prompt + completion texts; handle empty prompt specially
+    # Prompt + completion texts
+    if hasattr(tokenizer, "apply_chat_template"):
+        # Handle empty prompt specially
         full_texts = []
         for i, (p, o) in enumerate(zip(prompts, outputs)):
             sys_p = _sys(i)
@@ -78,13 +85,7 @@ def collate_prompt_output(
                 )
             full_texts.append(full)
     else:
-        # No chat template: treat prompt as-is, and prompt+output concatenated
-        if system_prompts is not None:
-            prompt_texts = [
-                (f"{s}\n\n{p}" if s else p) for s, p in zip(system_prompts, prompts)
-            ]
-        else:
-            prompt_texts = prompts
+        # No chat template: prompt+output concatenated
         full_texts = [
             (o if p == "" else p_text + tokenizer.eos_token + o)
             for p, p_text, o in zip(prompts, prompt_texts, outputs)

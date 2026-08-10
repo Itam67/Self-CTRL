@@ -1,0 +1,48 @@
+# Coins consistency stage:  python domains/coins/train.py
+model_name: meta-llama/Llama-3.1-8B-Instruct
+mode: lora
+seed: 42
+verbose_logging: true
+
+# REQUIRED: the SFT checkpoint to start from (see configs/coins_sft.yaml).
+# The paper uses the end-of-epoch-4 checkpoint.
+load_dir: models/coins/sft/ckpt_29000
+
+learning:
+  lr: 1e-5
+  epochs: 5
+  batch_size: 10
+  micro_batch_size: 1      # grad accumulation steps = batch_size // micro_batch_size
+  save_every: 20           # eval + checkpoint interval, in examples seen
+  examples_seen_start: 0
+
+  save_dir: models/coins/cons_bw0.0_cont0.3
+  results_dir: results/coins/cons_bw0.0_cont0.3
+
+  # lambda — 0 updates the explanation side only, which is the paper's setting
+  # for this domain.
+  bw: 0.0
+
+  # lambda_KL = 0.3. Weight on the behavior-preserving NLL term: rollouts are
+  # sampled once from the SFT-initialised policy and frozen, and their NLL under
+  # the training policy is a Monte Carlo forward-KL anchor stopping the rollout
+  # distribution from drifting while the explanation side moves.
+  cont_training_loss_weight: 0.3
+
+sampling:
+  n_beams: 10              # K candidate programs scored per update
+  num_cands: 5             # generation batch size
+  max_new_tokens: 150
+  temp: 1.0
+  top_p: 0.9
+
+data:
+  cons_dir: data/coins
+
+wandb:
+  project: self_ctrl_coins
+  run_name: cons_bw0.0_cont0.3
+
+hydra:
+  job:
+    chdir: false

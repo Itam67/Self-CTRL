@@ -1,57 +1,14 @@
-"""Shared figure manifest: the single place that says which runs are in the paper.
-
-Every figure script (plot_consistency_curves, plot_safety_sim, plot_cf,
-plot_capabilities) loads the same manifest YAML, so the condition list, the
-headline checkpoints, and the results layout are defined exactly once. Point a
-figure at a different manifest (``--manifest configs/figures/<family>.yaml``)
-to render the same figure for another model family.
-
-Layout contract
----------------
-A condition is one trained checkpoint (or the untrained base model). Adapters
-and metrics live in two parallel trees, matching the trainer's save_dir /
-results_dir split — models/ holds only large adapter weights, results/ holds
-only small JSON:
-
-    <models_root>/<run_dir>/ckpt_<ckpt>/          adapter (trainer save_dir)
-    <results_root>/<run_dir>/ckpt_<ckpt>/         metric JSONs   <- results_dir
-    <results_root>/<run_dir>/eval_snapshots/      training curves (trainer-written)
-    <results_root>/_base_evals/<model_slug>/      metric JSONs for the base model
-
-`panels` (the consistency-curves figure) therefore resolve against results_root,
-while a condition's `run_dir` names the run in both trees.
-
-Inside a condition's results_dir the eval scripts write:
-
-    harmbench_metrics.json                  evals/harmbench_eval.py
-    wildchat_metrics.json                   evals/wildchat_refusal_eval.py
-    mmlu_metrics.json                       evals/mmlu_eval.py
-    ambiguous/nsg_metrics.json              evals/ambiguous_consistency_eval.py
-    cf_consistency_<slug>_n<N>_percat.json  evals/cf_consistency_eval.py
-
-Those paths depend only on (condition, eval) — never on which figure asked — and
-the EVALS registry below is the one place that knows both where an eval writes
-and how to run it. So a figure only ever runs an eval that isn't on disk yet,
-and an eval needed by two figures is computed once by whichever runs first.
-Imports of the eval modules are deliberately lazy: ``--plot-only`` works in an
-environment with no torch.
-
-Roles
------
-Each condition declares a ``role`` — base, expl, mixed, beh, expl_baseline,
-beh_baseline — and the figures key colors/markers off the role rather than off
-the label text, so relabelling a condition never silently recolors it.
-"""
+"""Shared figure manifest. Stores which runs are in the paper, and where their metrics live."""
 
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
 import yaml
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,12 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # typo, and one that silently fell through to a default color would be worse
 # than an error.
 ROLES = (
+    # moral domain
     "base",
     "expl",
     "mixed",
     "beh",
     "expl_baseline",
     "beh_baseline",
+    # coins domain
+    "sft_baseline",
+    "cons_trained",
+    "oracle",
 )
 
 
@@ -73,15 +35,38 @@ def flat_label(label: str) -> str:
     return " ".join(label.split())
 
 
+_CKPT_DIR_RE = re.compile(r"ckpt_(\d+)")
+
+
+def get_checkpoint_dirs(run_dir: Path, ckpt_filter=None):
+    """Find ckpt_<step> adapter dirs under run_dir. Returns sorted [(step, dir), ...].
+
+    Step 0 is excluded as it denotes the untrained base model, which every eval
+    loads with no adapter rather than from a checkpoint dir.
+    """
+    ckpts = []
+    for d in run_dir.iterdir():
+        if not d.is_dir():
+            continue
+        m = _CKPT_DIR_RE.match(d.name)
+        if m:
+            step = int(m.group(1))
+            if step == 0:
+                continue
+            if ckpt_filter is None or step in ckpt_filter:
+                ckpts.append((step, d))
+    return sorted(ckpts, key=lambda x: x[0])
+
+
 @dataclass
 class Condition:
-    """One point/bar in a figure: a single checkpoint, or the base model."""
+    """A single checkpoint, or the base model."""
 
     label: str
     role: str
-    run_dir: Optional[Path]      # adapter dir (trainer save_dir), None for base
-    ckpt: Optional[int]          # headline checkpoint step, None for base
-    results_dir: Path            # canonical dir holding this condition's metrics
+    run_dir: Optional[Path]  # adapter dir (trainer save_dir), None for base
+    ckpt: Optional[int]  # headline checkpoint step, None for base
+    results_dir: Path  # canonical dir holding this condition's metrics
 
     @property
     def is_base(self) -> bool:
@@ -104,7 +89,7 @@ class Panel:
     """One panel of the consistency-curves figure (a training run, not a ckpt)."""
 
     title: str
-    run_dirs: list          # merged step-by-step; earlier dirs win on overlap
+    run_dirs: list  # merged step-by-step; earlier dirs win on overlap
 
 
 @dataclass
@@ -133,12 +118,18 @@ class Manifest:
             if c.label == label or " ".join(c.label.split()) == want:
                 return c
         known = ", ".join(repr(flat_label(c.label)) for c in self.conditions)
-        raise KeyError(f"no condition labelled {label!r} in {self.path}. Known: {known}")
+        raise KeyError(
+            f"no condition labelled {label!r} in {self.path}. Known: {known}"
+        )
 
     def cf_filename(self) -> str:
-        """Filename cf_consistency_eval.py writes, for the manifest's settings."""
+        """Filename evals/moral/cf.py writes, for the manifest's settings."""
         cf = self.eval_cfg.get("cf", {})
-        slug = str(cf.get("cf_model", "gemini-2.5-flash")).replace("/", "_").replace(".", "-")
+        slug = (
+            str(cf.get("cf_model", "gemini-2.5-flash"))
+            .replace("/", "_")
+            .replace(".", "-")
+        )
         return f"cf_consistency_{slug}_n{int(cf.get('n_prompts', 10))}_percat.json"
 
 
@@ -214,10 +205,6 @@ def load_manifest(path) -> Manifest:
     )
 
 
-# ---------------------------------------------------------------------------
-# Shared CLI
-# ---------------------------------------------------------------------------
-
 DEFAULT_MANIFEST = "configs/figures/moral_llama.yaml"
 
 
@@ -225,31 +212,39 @@ def figure_argparser(description: str) -> argparse.ArgumentParser:
     """Argparse parent shared by every figure script."""
     p = argparse.ArgumentParser(description=description)
     p.add_argument(
-        "--manifest", default=DEFAULT_MANIFEST,
+        "--manifest",
+        default=DEFAULT_MANIFEST,
         help=f"Figure manifest YAML (default {DEFAULT_MANIFEST}).",
     )
     p.add_argument(
-        "--only", action="append", default=None, metavar="LABEL",
+        "--only",
+        action="append",
+        default=None,
+        metavar="LABEL",
         help="Compute only this condition's evals, then exit without plotting. "
-             "Repeatable. Use this to fan the eval pass out over SLURM array tasks.",
+        "Repeatable. Use this to fan the eval pass out over SLURM array tasks.",
     )
     p.add_argument(
-        "--plot-only", action="store_true",
+        "--plot-only",
+        action="store_true",
         help="Never run an eval; plot from the metric JSONs already on disk and "
-             "skip (with a warning) any condition still missing them.",
+        "skip (with a warning) any condition still missing them.",
     )
     p.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Recompute evals even when their metric JSON already exists.",
     )
     p.add_argument(
-        "--out", default=None,
+        "--out",
+        default=None,
         help="Override the output figure path.",
     )
     p.add_argument(
-        "--status", action="store_true",
+        "--status",
+        action="store_true",
         help="Print which evals are already computed for every condition — the "
-             "whole deck, not just this figure's — then exit.",
+        "whole deck, not just this figure's — then exit.",
     )
     return p
 
@@ -261,7 +256,6 @@ def select_conditions(mf: Manifest, only) -> list:
     return [mf.by_label(label) for label in only]
 
 
-# ---------------------------------------------------------------------------
 # Eval registry
 #
 # ONE entry per eval, and it is the only place that knows two things: where that
@@ -276,7 +270,6 @@ def select_conditions(mf: Manifest, only) -> list:
 #
 # Adding an eval to a second figure is therefore a one-word change to that
 # figure's REQUIRES, with no risk of recomputation.
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -314,7 +307,7 @@ def _in_results(filename):
 
 
 def _run_harmbench(cond, mf):
-    from evals.harmbench_eval import run_harmbench
+    from evals.moral.harmbench import run_harmbench
 
     cfg = mf.eval_cfg.get("harmbench", {})
     run_harmbench(
@@ -328,7 +321,7 @@ def _run_harmbench(cond, mf):
 
 
 def _run_wildchat(cond, mf):
-    from evals.wildchat_refusal_eval import run_wildchat_refusal
+    from evals.moral.wildchat import run_wildchat_refusal
 
     cfg = mf.eval_cfg.get("wildchat", {})
     run_wildchat_refusal(
@@ -342,7 +335,7 @@ def _run_wildchat(cond, mf):
 
 
 def _run_mmlu(cond, mf):
-    from evals.mmlu_eval import run_mmlu
+    from evals.moral.mmlu import run_mmlu
 
     cfg = mf.eval_cfg.get("mmlu", {})
     run_mmlu(
@@ -355,7 +348,7 @@ def _run_mmlu(cond, mf):
 
 
 def _run_nsg(cond, mf):
-    from evals.ambiguous_consistency_eval import ALL_PHASES, run_eval
+    from evals.moral.nsg import ALL_PHASES, run_eval
 
     cfg = mf.eval_cfg.get("nsg", {})
     run_eval(
@@ -372,7 +365,7 @@ def _run_nsg(cond, mf):
 
 
 def _run_cf(cond, mf):
-    from evals.cf_consistency_eval import run as run_cf
+    from evals.moral.cf import run as run_cf
 
     cfg = mf.eval_cfg.get("cf", {})
     run_cf(
@@ -389,6 +382,24 @@ def _run_cf(cond, mf):
     )
 
 
+def _run_coins(cond, mf):
+    from evals.coins.per_coin import run_per_coin
+
+    cfg = mf.eval_cfg.get("coins", {})
+    run_per_coin(
+        model_name=mf.model_name,
+        lora_path=cond.lora_path,
+        output_dir=str(cond.results_dir),
+        n_programs=int(cfg.get("n_programs", 10)),
+        n_flips=int(cfg.get("n_flips", 100)),
+        max_new_tokens=int(cfg.get("max_new_tokens", 150)),
+        temp=float(cfg.get("temp", 1.0)),
+        top_p=float(cfg.get("top_p", 0.9)),
+        seed=int(cfg.get("seed", 42)),
+        gen_batch_size=int(cfg.get("gen_batch_size", 8)),
+    )
+
+
 EVALS = {
     spec.name: spec
     for spec in [
@@ -397,6 +408,7 @@ EVALS = {
         EvalSpec("mmlu", _in_results("mmlu_metrics.json"), _run_mmlu),
         EvalSpec("nsg", lambda cond, mf: cond.nsg_metrics_path, _run_nsg),
         EvalSpec("cf", lambda cond, mf: cond.results_dir / mf.cf_filename(), _run_cf),
+        EvalSpec("coins", _in_results("per_coin_debug.json"), _run_coins),
     ]
 }
 
@@ -408,11 +420,6 @@ def get_eval(name: str) -> EvalSpec:
         raise KeyError(
             f"unknown eval {name!r}; registered: {', '.join(EVALS)}"
         ) from None
-
-
-# ---------------------------------------------------------------------------
-# Figure driver
-# ---------------------------------------------------------------------------
 
 
 def gather(conditions, eval_names, mf: Manifest, *, plot_only: bool, force: bool):
@@ -430,7 +437,8 @@ def gather(conditions, eval_names, mf: Manifest, *, plot_only: bool, force: bool
         for spec in specs:
             try:
                 path = (
-                    spec.path(cond, mf) if plot_only
+                    spec.path(cond, mf)
+                    if plot_only
                     else spec.ensure(cond, mf, force=force)
                 )
             except Exception as exc:  # eval failed — report, don't abort the figure
@@ -484,18 +492,30 @@ def report_missing(missing) -> None:
     print()
 
 
+def manifest_evals(mf: Manifest) -> list:
+    """The evals this manifest is about — the ones it configures under `eval:`.
+
+    A coins manifest shouldn't report on HarmBench and a moral one shouldn't
+    report on per-coin programs. Falls back to every registered eval when a
+    manifest declares no eval settings at all.
+    """
+    named = [n for n in EVALS if n in mf.eval_cfg]
+    return named or list(EVALS)
+
+
 def report_status(mf: Manifest) -> None:
-    """Print, for every condition, which registered evals are on disk.
+    """Print, for every condition, which of this deck's evals are on disk.
 
     Covers the whole deck rather than one figure's slice, so `--status` from any
     plot script answers "what still needs computing anywhere?".
     """
+    names = manifest_evals(mf)
     width = max(len(flat_label(c.label)) for c in mf.conditions)
     print(f"Eval status for {mf.path}:\n")
-    print(f"  {'condition':<{width}}  " + "  ".join(f"{n:>9}" for n in EVALS))
+    print(f"  {'condition':<{width}}  " + "  ".join(f"{n:>9}" for n in names))
     for cond in mf.conditions:
-        marks = []
-        for spec in EVALS.values():
-            marks.append(f"{'ok' if spec.path(cond, mf).exists() else '-':>9}")
+        marks = [
+            f"{'ok' if EVALS[n].path(cond, mf).exists() else '-':>9}" for n in names
+        ]
         print(f"  {flat_label(cond.label):<{width}}  " + "  ".join(marks))
     print()

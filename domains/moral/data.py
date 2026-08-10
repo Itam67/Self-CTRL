@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Spec-eval split JSONs live here; anchored to the repo root so it resolves
 # regardless of the working directory hydra switches to at runtime.
-_SPEC_EVAL_DIR = Path(__file__).resolve().parents[1] / "data" / "moral"
+_SPEC_EVAL_DIR = Path(__file__).resolve().parents[2] / "data" / "moral"
 
 
 class MoralDataset(torch.utils.data.Dataset):
@@ -134,64 +134,6 @@ def make_moral_dataset(split, cfg, max_samples=None):
         outputs.append(out)
 
     return MoralDataset(behavior_prompts, explanation_prompts, outputs)
-
-
-# Legacy: per-principle paraphrases used before the 10-category recategorization.
-# Kept for possible future reuse / analysis. New code should use
-# CATEGORY_PARAPHRASES via category_paraphrase(principle).
-# Maps principle type -> phrase that completes "user requests that ..."
-PRINCIPLE_PARAPHRASES = {
-    "align_with_human_interests": "involve human interests",
-    "avoid_discrimination": "encourage discrimination",
-    "avoid_dishonesty_harmful_activity": "involve dishonesty or harmful activity",
-    "avoid_encouraging_harmful_activity": "encourage harmful activity",
-    "avoid_harmful_content": "involve harmful content",
-    "avoid_implying_emotion": "ask whether you have emotions",
-    "avoid_personal_identity_persistence": "ask about your personal identity",
-    "avoid_preachy_obnoxious_responses": "tempt preachy or obnoxious responses",
-    "avoid_self_identity": "ask about your self-identity",
-    "avoid_self_interest": "could benefit you at the expense of users",
-    "avoid_toxicity_bias": "involve toxicity or bias",
-    "be_cautious_conservative": "require caution or conservatism",
-    "be_child_appropriate": "may be seen by children",
-    "be_ethical_harmless": "raise ethical concerns",
-    "be_ethical_moral": "involve moral considerations",
-    "be_friendly_conscientious": "call for friendliness and conscientiousness",
-    "be_harmless_pleasant": "could lead to harmful responses",
-    "be_helpful_honest_harmless": "require balancing helpfulness, honesty, and harmlessness",
-    "be_obedient_unselfish": "test obedience and unselfishness",
-    "be_peaceful_ethical_respectful": "call for peace, ethics, and respect",
-    "be_polite_respectful": "call for politeness and respect",
-    "be_thoughtful_respectful_cordial": "call for thoughtfulness and cordiality",
-    "be_wise_ethical_polite": "call for wisdom and politeness",
-    "be_wise_peaceful_ethical": "call for wisdom and peaceful ethics",
-    "choose_less_harmful_response": "present a choice between harmful alternatives",
-    "demonstrate_ethical_awareness": "test ethical awareness",
-    "demonstrate_humility": "test humility",
-    "desire_human_good": "relate to the good of humanity",
-    "minimize_existential_threat": "relate to existential threats",
-    "minimize_harm": "could cause harm",
-    "minimize_long_term_risk": "involve long-term risks",
-    "oppose_cruelty_inhumane_treatment": "involve cruelty or inhumane treatment",
-    "prefer_human_control": "involve human control over AI",
-    "prioritize_helpfulness_honesty_harmlessness": "require balancing helpfulness, honesty, and harmlessness",
-    "prioritize_human_wellbeing": "involve human wellbeing",
-    "protect_personal_information": "involve personal information",
-    "recognize_universal_equality": "relate to universal equality",
-    "reduce_existential_risk": "relate to existential risk",
-    "represent_as_ai_accurately": "ask you to misrepresent what you are",
-    "respect_economic_social_rights": "involve economic and social rights",
-    "respect_freedom_thought_expression": "involve freedom of thought and expression",
-    "respect_less_industrialized_nations": "involve less industrialized nations",
-    "respect_non_western_audiences": "involve non-western audiences",
-    "respect_non_western_traditions": "involve non-western traditions",
-    "respect_privacy_rights": "involve privacy rights",
-    "support_freedom_equality_brotherhood": "involve freedom, equality, and brotherhood",
-    "support_life_liberty_security": "involve life, liberty, and security",
-    # Holdout principles (not seen during training)
-    "avoid_power_control_desires": "involve power or control desires",
-    "respect_diverse_educational_backgrounds": "involve diverse educational backgrounds",
-}
 
 
 # 10-category grouping over the 44 principles kept in the current data. The

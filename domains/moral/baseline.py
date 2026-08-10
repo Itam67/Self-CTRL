@@ -1,33 +1,7 @@
-"""
-Introspective-baseline trainer (the "Expl. baseline" / "Beh. baseline" figure
-conditions).
-
-Each side is updated against the frozen base policy's own self-report, with NO
-cross-side coupling in the reward:
-
-  Explanation update (bw=0):  reward = P_base(Yes | prompt, principle)
-                              "Does this principle describe how you'd respond?"
-
-  Behavior update    (bw=1):  reward = P_base(Yes | prompt, response)
-                              "Is this response one you'd endorse producing?"
-
-Mirrors domains/moral.py exactly except for reward_fn — same data, collectors,
-eval, untouched-side KL, continued-training loss, and ConsistencyTrainer. Which
-side trains is chosen by learning.bw; the mixed setting is not meaningful here
-because the two baseline rewards are independent.
-
-Each side has its own config, so the two runs cannot write to the same save_dir:
-    python domains/moral_baseline.py                                    # Expl. baseline
-    python domains/moral_baseline.py --config-name moral_baseline_beh   # Beh. baseline
-"""
-
 import sys
 from pathlib import Path
 
-# Allow running this file directly (`python domains/moral_baseline.py`): Python
-# only puts this file's dir on sys.path, so add the repo root to resolve
-# consistency.*/domains.*
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import hydra
 import torch
@@ -36,7 +10,7 @@ from contextlib import nullcontext
 
 from consistency.trainer import ConsistencyConfig, ConsistencyTrainer
 from consistency.model_utils import load_model_tok, cont_training_loss
-from domains.moral import (
+from domains.moral.train import (
     collect_behaviors,
     collect_explanations,
     full_eval,
@@ -44,7 +18,7 @@ from domains.moral import (
     untouched_side_kl_loss,
     verbose_logging_moral,
 )
-from domains.moral_judges import (
+from domains.moral.judges import (
     BEH_BASELINE_TEMPLATE,
     EXPL_BASELINE_TEMPLATE,
     soft_score_compliance,
@@ -54,13 +28,13 @@ from domains.moral_judges import (
 ### Helper functions ###
 def _score_unary(user_prompts, per_example_Ks, model, tokenizer):
     """
-    Score a flat list of unary judge prompts on the FROZEN BASE policy and
+    Score a list of unary judge prompts on the FROZEN BASE policy and
     reshape back to [B, K].
 
-    The adapter is disabled for the scoring pass (same trick phi_moral_jury_soft
-    uses for the jury), so the reward always comes from the base policy's
+    The adapter is disabled for the scoring pass so the reward always comes from the base policy's
     self-report rather than the policy being trained.
     """
+
     device = next(model.parameters()).device
 
     adapter_ctx = (
@@ -86,9 +60,9 @@ def _score_unary(user_prompts, per_example_Ks, model, tokenizer):
     return torch.stack(rewards)  # [B, K]
 
 
-### Baseline reward functions ###
+# Explanation baseline
 def phi_expl_baseline_soft(explanations, model, tokenizer, cfg, extra):
-    """Unary explanation reward — the judge sees (prompt, principle), no behavior."""
+    """Explanation baseline reward. The judge sees (prompt, principle) no behavior."""
     behavior_prompts = extra["behavior_prompts"]
 
     user_prompts = []
@@ -106,8 +80,9 @@ def phi_expl_baseline_soft(explanations, model, tokenizer, cfg, extra):
     return _score_unary(user_prompts, per_example_Ks, model, tokenizer)
 
 
+# Behavior baseline
 def phi_beh_baseline_soft(behaviors, model, tokenizer, cfg, extra):
-    """Unary behavior reward — the judge sees (prompt, response), no explanation."""
+    """The behavior reward. The judge sees (prompt, response) but no explanation."""
     behavior_prompts = extra["behavior_prompts"]
 
     user_prompts = []
@@ -144,9 +119,8 @@ def phi_baseline_introspective(behaviors, explanations, model, tokenizer, cfg, e
     return phi_beh_baseline_soft(behaviors, model, tokenizer, cfg, extra)
 
 
-### Main entry point for training ###
 @hydra.main(
-    config_path="../configs",
+    config_path="../../configs",
     config_name="moral_baseline_expl",
     version_base=None,
 )
@@ -179,9 +153,7 @@ def main(cfg: DictConfig) -> None:
         fused=torch.cuda.is_available(),
     )
 
-    # The auxiliary (engagement) signal is a property of the jury reward and has
-    # no counterpart in the unary baseline rewards — refuse to run silently with
-    # a setting that would be ignored.
+    # Disable auxiliary weight for the introspective baseline
     aux_w = float(getattr(cfg.learning, "auxiliary_weight", 0.0))
     if aux_w > 0:
         raise ValueError(
@@ -198,8 +170,8 @@ def main(cfg: DictConfig) -> None:
     else:
         cont_training_loss_fn = None
 
-    # Consistency config for the trainer — identical to domains/moral.py except
-    # for reward_fn.
+    # Consistency config for the trainer which is identical to domains/moral/train.py except
+    # for reward_fn
     cons_cfg = ConsistencyConfig(
         load_data=lambda c: load_data_spec_eval(c),
         collect_behaviors=collect_behaviors,

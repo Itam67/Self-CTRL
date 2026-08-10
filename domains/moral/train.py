@@ -1,9 +1,9 @@
 import sys
 from pathlib import Path
 
-# Allow running this file directly (`python domains/moral.py`): Python only puts
+# Allow running this file directly (`python domains/moral/train.py`): Python only puts
 # this file's dir on sys.path, so add the repo root to resolve consistency.*/domains.*
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import json
 import hydra
@@ -24,13 +24,12 @@ from consistency.model_utils import (
     cont_training_loss,
 )
 from consistency.data_utils import load_cont_training_data
-from domains.moral_data import (
+from domains.moral.data import (
     make_spec_eval_dataset,
-    PRINCIPLE_PARAPHRASES,
     category_paraphrase,
     holdout_type,
 )
-from domains.moral_judges import (
+from domains.moral.judges import (
     ETHICAL_FRAMEWORKS,
     CLASSIFICATION_TEMPLATE,
     ENGAGEMENT_TEMPLATE,
@@ -97,15 +96,14 @@ def load_data_spec_eval(cfg) -> tuple:
     # Prepare additional information for logging and evaluation
     train_categories = [category_paraphrase(p) for p in train_ds.principle]
     val_categories = [category_paraphrase(p) for p in val_ds.principle]
-    train_principles = [PRINCIPLE_PARAPHRASES[p] for p in train_ds.principle]
-    val_principles = [PRINCIPLE_PARAPHRASES[p] for p in val_ds.principle]
     extra = {
         # Primary label (category paraphrase) — what logging/eval reads.
         "train/labels": train_categories,
         "val/labels": val_categories,
-        # Original per-principle paraphrase, kept alongside for analysis.
-        "train/labels_principle": train_principles,
-        "val/labels_principle": val_principles,
+        # Principle slug, kept alongside for analysis: labels are category-level,
+        # so this is the only per-record trace of which principle it came from.
+        "train/labels_principle": list(train_ds.principle),
+        "val/labels_principle": list(val_ds.principle),
         "prompt_to_principle": {
             **dict(zip(train_ds.behavior_prompts, train_categories)),
             **dict(zip(val_ds.behavior_prompts, val_categories)),
@@ -687,14 +685,12 @@ def holdout_eval(model, tokenizer, val_loader, device, cfg, extra):
             pin_memory=torch.cuda.is_available(),
         )
         extra["holdout/labels"] = [category_paraphrase(p) for p in holdout_ds.principle]
-        extra["holdout/labels_principle"] = [
-            PRINCIPLE_PARAPHRASES[p] for p in holdout_ds.principle
-        ]
+        extra["holdout/labels_principle"] = list(holdout_ds.principle)
         extra["holdout/holdout_types"] = [holdout_type(p) for p in holdout_ds.principle]
 
     holdout_loader = extra["holdout_loader"]
     gt_principles = extra["holdout/labels"]
-    gt_principles_original = extra["holdout/labels_principle"]
+    gt_principle_slugs = extra["holdout/labels_principle"]
     holdout_types = extra["holdout/holdout_types"]
     examples_seen = extra.get("examples_seen", 0)
     idx = 0
@@ -746,7 +742,7 @@ def holdout_eval(model, tokenizer, val_loader, device, cfg, extra):
                         "response": curr_responses[i],
                         "principle": curr_explanations[i],
                         "gt_principle": gt_principles[idx],
-                        "gt_principle_original": gt_principles_original[idx],
+                        "gt_principle_slug": gt_principle_slugs[idx],
                         "holdout_type": holdout_types[idx],
                         "consistency_score": score,
                     }
@@ -806,7 +802,7 @@ def spec_eval_eval(model, tokenizer, val_loader, device, cfg, extra):
     model.eval()
 
     gt_principles = extra["val/labels"]
-    gt_principles_original = extra["val/labels_principle"]
+    gt_principle_slugs = extra["val/labels_principle"]
     examples_seen = extra.get("examples_seen", 0)
     idx = 0
     eval_records = []
@@ -866,7 +862,7 @@ def spec_eval_eval(model, tokenizer, val_loader, device, cfg, extra):
                         "response": curr_responses[i],
                         "principle": curr_explanations[i],
                         "gt_principle": gt_principles[idx],
-                        "gt_principle_original": gt_principles_original[idx],
+                        "gt_principle_slug": gt_principle_slugs[idx],
                         "consistency_score": cons_score,
                         "engagement_score": eng_score,
                     }
@@ -939,7 +935,7 @@ def full_eval(model, tokenizer, val_loader, device, cfg, extra):
 
 ### Main entry point for training ###
 @hydra.main(
-    config_path="../configs",
+    config_path="../../configs",
     config_name="moral_expl",
     version_base=None,
 )

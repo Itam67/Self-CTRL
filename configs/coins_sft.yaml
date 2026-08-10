@@ -1,0 +1,36 @@
+# Coins supervised stage:  python domains/coins/sft.py
+model_name: meta-llama/Llama-3.1-8B-Instruct
+mode: lora
+seed: 42
+
+# Warm start from an existing adapter; null trains a fresh one.
+load_dir: null
+
+lr: 3e-4
+batch_size: 4
+epochs: 5
+log_every: 10
+eval_every: 0          # 0 = evaluate at epoch boundaries only
+num_flips: 100         # flips per rollout, for the behavioral eval
+
+save_dir: models/coins/sft
+
+data:
+  sft_dir: data/coins
+  train_file: sft_train.jsonl
+  val_file: sft_val.jsonl
+  max_len: 400
+  # OpenCodeInstruct keeps the model writing valid Python while it memorises
+  # coin biases. Streamed from HF at run time, not shipped.
+  use_opencode: true
+  opencode_max_examples: 5000
+  opencode_domain: algorithmic
+  opencode_min_test_score: 0.9
+
+wandb:
+  project: self_ctrl_coins
+  run_name: coins_sft
+
+hydra:
+  job:
+    chdir: false

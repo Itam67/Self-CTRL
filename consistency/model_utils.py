@@ -3,7 +3,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Any, Dict, List, Optional, Tuple
 import torch.nn.functional as F
 from peft import PeftModel, LoraConfig, get_peft_model
-from consistency.data_utils import collate_prompt_output
+from consistency.data_utils import build_prompt_text, collate_prompt_output
 
 # Lora hyperparameters
 LORA_R = 16
@@ -21,6 +21,16 @@ TARGET_MODULES = (
 
 
 # Model loading utilities
+def get_amp_context(device: torch.device):
+    """Autocast context for training/scoring forwards: bf16 on CUDA, off on CPU."""
+    dev_type = "cuda" if device.type == "cuda" else "cpu"
+    return torch.autocast(
+        device_type=dev_type,
+        dtype=torch.bfloat16 if dev_type == "cuda" else torch.float32,
+        enabled=(dev_type == "cuda"),
+    )
+
+
 def load_model_tok(
     model_name,
     mode: str = "lora",
@@ -96,15 +106,7 @@ def chat_prefix_ids(tokenizer, user_text: str) -> List[int]:
     Prefix up to the assistant header (assistant turn starts next).
     Works for chat tokenizers; falls back to base model behavior.
     """
-    if has_chat(tokenizer):
-        s = tokenizer.apply_chat_template(
-            [{"role": "user", "content": user_text}],
-            add_generation_prompt=True,
-            tokenize=False,
-            enable_thinking=False,
-        )
-    else:
-        s = user_text
+    s = build_prompt_text(tokenizer, None, user_text)
     return tokenizer(s, add_special_tokens=False)["input_ids"]
 
 
@@ -155,29 +157,12 @@ def sample_conts_gen(
         assert len(system_prompts) == len(prompts)
 
     # Build the prompt string up to assistant header
-    if has_chat(tokenizer):
-        prompt_text = []
-        for i, p in enumerate(prompts):
-            messages = []
-            sys_p = system_prompts[i] if system_prompts is not None else None
-            if sys_p:
-                messages.append({"role": "system", "content": sys_p})
-            messages.append({"role": "user", "content": p})
-            prompt_text.append(
-                tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            )
-    else:
-        if system_prompts is not None:
-            prompt_text = [
-                (f"{s}\n\n{p}" if s else p) for s, p in zip(system_prompts, prompts)
-            ]
-        else:
-            prompt_text = prompts
+    prompt_text = [
+        build_prompt_text(
+            tokenizer, system_prompts[i] if system_prompts is not None else None, p
+        )
+        for i, p in enumerate(prompts)
+    ]
 
     # PAD handling + left pad for generation
     pad_id, _ = ensure_pad(tokenizer)
@@ -278,29 +263,12 @@ def sample_k_conts_gen(
         assert len(system_prompts) == len(prompts)
 
     # Build the prompt string up to assistant header
-    if has_chat(tokenizer):
-        prompt_text = []
-        for i, p in enumerate(prompts):
-            messages = []
-            sys_p = system_prompts[i] if system_prompts is not None else None
-            if sys_p:
-                messages.append({"role": "system", "content": sys_p})
-            messages.append({"role": "user", "content": p})
-            prompt_text.append(
-                tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            )
-    else:
-        if system_prompts is not None:
-            prompt_text = [
-                (f"{s}\n\n{p}" if s else p) for s, p in zip(system_prompts, prompts)
-            ]
-        else:
-            prompt_text = prompts
+    prompt_text = [
+        build_prompt_text(
+            tokenizer, system_prompts[i] if system_prompts is not None else None, p
+        )
+        for i, p in enumerate(prompts)
+    ]
 
     # PAD handling + left pad for generation
     pad_id, old_side = ensure_pad(tokenizer)

@@ -1,6 +1,6 @@
 # Behavior training, λ=1.0 — behavior side only. The paper's `bw1.0_reg0.25_aux0.4_ukl0.1` run.
 #
-#     python domains/moral.py --config-name moral_beh
+#     python domains/moral/train.py --config-name moral_beh
 #
 # Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
 defaults:

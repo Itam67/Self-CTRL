@@ -9,8 +9,8 @@
 #   sbatch scripts/run_moral.sh --config-name moral_mixed          # λ=0.5
 #   sbatch scripts/run_moral.sh --config-name moral_beh            # λ=1.0
 # Set ENTRY for the introspective baselines:
-#   ENTRY=domains/moral_baseline.py sbatch scripts/run_moral.sh    # Expl. baseline
-#   ENTRY=domains/moral_baseline.py sbatch scripts/run_moral.sh --config-name moral_baseline_beh
+#   ENTRY=domains/moral/baseline.py sbatch scripts/run_moral.sh    # Expl. baseline
+#   ENTRY=domains/moral/baseline.py sbatch scripts/run_moral.sh --config-name moral_baseline_beh
 #
 # Any other argument is forwarded as a hydra override, e.g.:
 #   sbatch scripts/run_moral.sh learning.lr=2e-5 learning.epochs=1
@@ -60,7 +60,7 @@ echo "Host: $(hostname)  GPU: ${CUDA_VISIBLE_DEVICES:-?}  Started: $(date)"
 nvidia-smi || true
 
 # ENTRY selects the trainer; the introspective baselines share this launcher:
-#   ENTRY=domains/moral_baseline.py sbatch scripts/run_moral.sh learning.bw=1.0
-python "${ENTRY:-domains/moral.py}" "$@"
+#   ENTRY=domains/moral/baseline.py sbatch scripts/run_moral.sh learning.bw=1.0
+python "${ENTRY:-domains/moral/train.py}" "$@"
 
 echo "Finished: $(date)"

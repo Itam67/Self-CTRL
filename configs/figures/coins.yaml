@@ -1,0 +1,44 @@
+# Figure manifest — coins (probabilistic reasoning) domain.
+#
+# Read by:
+#     python -m evals.coins.plot_calibration        (calibration / self-consistency grid)
+#
+# Same contract as the moral manifests (see the Figures section of README.md).
+# run_dir is the run's slug — the save_dir basename from that condition's
+# training config, noted beside each entry.
+#
+# >>> The ckpt values are PLACEHOLDERS — set them to your own checkpoints. <<<
+
+model_name: meta-llama/Llama-3.1-8B-Instruct
+
+models_root: models/coins
+results_root: results/coins
+figures_dir: results/final_figures
+
+eval:
+  coins:
+    n_programs: 10       # K candidate programs sampled per coin
+    n_flips: 100         # flips in the behavioral rollout
+    max_new_tokens: 150
+    temp: 1.0
+    top_p: 0.9
+    seed: 42
+    gen_batch_size: 8
+
+# One entry per column of the figure, left to right. `role` drives styling
+# (sft_baseline | cons_trained | oracle).
+conditions:
+  - label: "SFT baseline"
+    role: sft_baseline
+    run_dir: sft                          # configs/coins_sft.yaml
+    ckpt: 29000                           # end of epoch 4 (7,250 steps/epoch)
+
+  - label: "Consistency training"
+    role: cons_trained
+    run_dir: cons_bw0.0_cont0.3           # configs/coins.yaml
+    ckpt: 1100                            # ~110 updates x batch 10 = 1,100 examples
+
+  - label: "Ground-truth supervision"
+    role: oracle
+    run_dir: oracle                       # configs/coins_sft_oracle.yaml
+    ckpt: 43400                           # end of epoch 4 on the 90-coin corpus

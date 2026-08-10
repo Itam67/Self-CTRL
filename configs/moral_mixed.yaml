@@ -1,6 +1,6 @@
 # Mixed training, λ=0.5 — both sides updated. The paper's `bw0.5_reg0.25_aux0.4_ukl0.0` run.
 #
-#     python domains/moral.py --config-name moral_mixed
+#     python domains/moral/train.py --config-name moral_mixed
 #
 # Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
 defaults:

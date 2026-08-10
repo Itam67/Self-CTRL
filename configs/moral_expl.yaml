@@ -1,6 +1,6 @@
 # Explanation training, λ=0 — the paper's `bw0.0_reg0.0_aux0_ukl0.1` run.
 #
-#     python domains/moral.py
+#     python domains/moral/train.py
 #
 # Inherits configs/moral.yaml; only the keys below differ from the paper defaults.
 defaults:
