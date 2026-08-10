@@ -10,6 +10,25 @@ and a *behavior* out of context. The model is trained so the two are consistent.
 | `domains/coins/` | a Python program stating a coin's bias | a rollout of H/T flips | Bernoulli log-likelihood |
 
 
+## Setup
+
+```bash
+pip install -r requirements.txt          # Python >= 3.10
+huggingface-cli login                    # Llama-3.1-8B-Instruct is a gated repo
+gcloud auth application-default login    # Gemini judges (Vertex ADC)
+export GOOGLE_CLOUD_PROJECT=<project-id>
+```
+
+Run every command from the repo root: all config paths are relative to it and
+hydra is set not to chdir.
+
+The Gemini steps are needed only for the moral evals (HarmBench, WildChat, NSG,
+counterfactual) — training and the coins figure never call an API. Training does
+need network: the moral runs stream their SFT data from
+`nvidia/Nemotron-SFT-Instruction-Following-Chat-v2` and coins SFT streams 5,000
+`nvidia/OpenCodeInstruct` examples, neither of which ships in `data/`. `wandb` is
+optional; if it isn't configured, logging is skipped.
+
 ## Moral domain  training
 
 One config per condition, at the paper's settings, each writing to its own
@@ -37,9 +56,6 @@ key can still be overridden on the command line:
 
 Adapters get saved to to `models/moral/<run>/ckpt_<step>/`, eval snapshots and metrics to
 `results/moral/<run>/`.
-
-All config paths are relative to the repo root and hydra is set not to chdir, so
-run from the checkout. 
 
 The main trainer's reward is the consistency jury. Explanation and behavior are
 scored *against each other*. The baseline (`domains/moral/baseline.py`) is
