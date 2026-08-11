@@ -257,6 +257,16 @@ def sample_k_conts_gen(
     """
 
     assert k >= 1
+    # Sampling must not see dropout, and train mode is deliberately NOT restored
+    # afterwards: the caller is mid-training, so leaving the model in eval keeps
+    # LoRA dropout off for the scoring forwards too. Restoring it here would
+    # perturb both the drawn candidates and the gradients computed from them.
+    model.eval()
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     # Check that a system prompt exists for each prompt if provided
     if system_prompts is not None:
@@ -404,7 +414,12 @@ def compute_nll(
             tokenizer, prompt_group, cont_group, system_prompts=sys_list
         )
         batch = {k: v.to(device) for k, v in batch.items()}
-        labels = batch["labels"]
+        # Popped, not read: handing `labels` to the model makes it compute its
+        # own ForCausalLMLoss, which upcasts the full [K, T, vocab] logits to
+        # fp32 and pins that plus a same-sized log-softmax in the graph until
+        # backward. We want per-sequence nlls, not that scalar, so it is pure
+        # waste. The masking below is what produces the returned values.
+        labels = batch.pop("labels")
 
         logits = model(**batch, use_cache=False).logits
 

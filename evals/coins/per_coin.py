@@ -15,6 +15,7 @@ from consistency.model_utils import (
 )
 from domains.coins.data import DATA_DIR, coin_groups
 from domains.coins.program import program_biases
+from evals.coins.stats import mode_of_samples
 
 
 BASE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -42,6 +43,12 @@ def prompt_templates(cons_path=None):
     coin, verb, rollout = rec["coin"], rec["verb_prompt"], rec["rollout_prompt"]
     if coin not in verb or coin not in rollout:
         raise RuntimeError(f"{coin} missing from its own prompts in {cons_path}")
+
+    # The consistency data carries six rollout paraphrases and record 0 happens
+    # to hold the one misspelling "seperated". Every SFT corpus says "separated",
+    # so templating off record 0 verbatim would probe all 100 coins with a string
+    # the model was never trained on.
+    rollout = rollout.replace("space seperated", "space separated")
 
     return verb.replace(coin, _TEMPLATE_COIN), rollout.replace(coin, _TEMPLATE_COIN)
 
@@ -147,7 +154,10 @@ def run_per_coin(
                 "group": group_of[coin],
                 "gt_bias": bias_of[coin],
                 "pred_bias_samples": samples,
-                "pred_bias": samples[0] if samples else None,
+                # The mode over the K samples, which is what plot_calibration
+                # plots. Taking samples[0] instead would make the metrics printed
+                # here a different (much noisier) statistic from the figure's.
+                "pred_bias": mode_of_samples(samples) if samples else None,
                 "rollout_h": h,
                 "rollout_n": h + t,
                 "rollout_bias": (h / (h + t)) if (h + t) else None,
@@ -160,6 +170,13 @@ def run_per_coin(
         "lora_path": lora_path,
         "n_programs": n_programs,
         "n_flips": n_flips,
+        # Sampling settings are part of the result: the same checkpoint scores
+        # very differently at different program temperatures, and two runs land
+        # on the same output path.
+        "temp": temp,
+        "top_p": top_p,
+        "max_new_tokens": max_new_tokens,
+        "seed": seed,
         "metrics": metrics,
         "records": records,
     }
@@ -191,6 +208,12 @@ if __name__ == "__main__":
     p.add_argument("--output_dir", default=None)
     p.add_argument("--n_programs", type=int, default=DEFAULT_N_PROGRAMS)
     p.add_argument("--n_flips", type=int, default=DEFAULT_N_FLIPS)
+    # Program-sampling temperature. The original ran all three figure columns at
+    # 1.0 — its `coin_sft_eval_*.yaml` say 0.3, but every oracle run overrode it
+    # on the command line (see its outputs/*/.hydra/overrides.yaml). 1.0 is the
+    # value to reproduce; this flag exists so the choice is explicit and logged.
+    p.add_argument("--temp", type=float, default=DEFAULT_TEMP)
+    p.add_argument("--top_p", type=float, default=DEFAULT_TOP_P)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gen_batch_size", type=int, default=8)
     args = p.parse_args()
@@ -201,6 +224,8 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         n_programs=args.n_programs,
         n_flips=args.n_flips,
+        temp=args.temp,
+        top_p=args.top_p,
         seed=args.seed,
         gen_batch_size=args.gen_batch_size,
     )

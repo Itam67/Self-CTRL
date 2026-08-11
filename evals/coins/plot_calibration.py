@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -13,6 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from evals.coins.stats import mode_of_samples
 from evals.manifest import figure_argparser, prepare_figure
 from evals.figure_utils import BOOTSTRAP_SEED, NBOOT, apply_serif_font
 from evals.plot_style import apply_style
@@ -69,19 +69,6 @@ def _bootstrap_mean_ci(samples):
     return mean, float(lo), float(hi)
 
 
-def _mode(samples):
-    """Modal stated bias over K samples (3dp); ties broken toward the mean."""
-    s = np.asarray(samples, dtype=float)
-    if s.size == 0:
-        return float("nan")
-    counts = Counter(np.round(s, 3).tolist())
-    top = max(counts.values())
-    candidates = [v for v, c in counts.items() if c == top]
-    if len(candidates) == 1:
-        return float(candidates[0])
-    return float(min(candidates, key=lambda v: abs(v - float(s.mean()))))
-
-
 def _r2(pred, target):
     """R^2 against the identity line (see domains/coins/train.py)."""
     pairs = [
@@ -112,7 +99,7 @@ def _panel(ax, records, x_key, *, wilson: bool, title=None, ylabel=None, xlabel=
         for r in rows:
             samples = r.get("pred_bias_samples") or []
             if samples:
-                y = _mode(samples)
+                y = mode_of_samples(samples)
                 _, ylo, yhi = _bootstrap_mean_ci(samples)
             else:
                 y = r["pred_bias"] if r["pred_bias"] is not None else float("nan")

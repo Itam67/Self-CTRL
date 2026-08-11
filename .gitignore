@@ -1,0 +1,11 @@
+# Training output — large, never belongs in git.
+models/
+results/
+slurm_logs/
+wandb/
+
+# Site-specific launcher config (see scripts/cluster_env.sh.example).
+# (site config is your own file, pointed at by SITE_ENV)
+
+__pycache__/
+*.pyc

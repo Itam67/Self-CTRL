@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Optional
 from pathlib import Path
@@ -224,30 +225,46 @@ class ConsistencyTrainer:
 
                     ### Collect samples ###
 
+                    # Both sides are always collected, but a side that bw
+                    # weights to zero is never backwarded: its nlls only get
+                    # argmin'd to pick the other side's anchor. Building a graph
+                    # for it is waste, and at bw=1.0 it is actively harmful —
+                    # nothing frees that graph until `explanations_nlls` is
+                    # rebound below, i.e. after the NEXT collect_explanations has
+                    # already built its own, so three sets of K sequences coexist
+                    # and OOM. (At bw=0.0 the stale side is `behavior_nlls`,
+                    # which is rebound first, which is why only bw=1.0 died.)
+                    bw = float(self.cfg.learning.bw)
+                    beh_grad = nullcontext() if bw > 0.0 else torch.no_grad()
+                    expl_grad = nullcontext() if bw < 1.0 else torch.no_grad()
+
                     # Collect Behaviors
-                    behaviors, behavior_nlls, extra = self.cons_cfg.collect_behaviors(
-                        self.model,
-                        self.tokenizer,
-                        behavior_prompts_all[start:end],
-                        self.cfg,
-                        self.extra,
-                    )
+                    with beh_grad:
+                        behaviors, behavior_nlls, extra = (
+                            self.cons_cfg.collect_behaviors(
+                                self.model,
+                                self.tokenizer,
+                                behavior_prompts_all[start:end],
+                                self.cfg,
+                                self.extra,
+                            )
+                        )
                     self.extra.update(extra) if extra is not None else None
 
                     # Collect Explanations
-                    explanations, explanations_nlls, valid_mask, extra = (
-                        self.cons_cfg.collect_explanations(
-                            self.model,
-                            self.tokenizer,
-                            explanation_prompts_all[start:end],
-                            self.cfg,
-                            self.extra,
+                    with expl_grad:
+                        explanations, explanations_nlls, valid_mask, extra = (
+                            self.cons_cfg.collect_explanations(
+                                self.model,
+                                self.tokenizer,
+                                explanation_prompts_all[start:end],
+                                self.cfg,
+                                self.extra,
+                            )
                         )
-                    )
                     self.extra.update(extra) if extra is not None else None
 
                     ### Calculate losses (skip the side bw weights to zero) ###
-                    bw = float(self.cfg.learning.bw)
                     k_behaviors = isinstance(behaviors[0], list)  # [B][K] vs [B]
                     loss = 0.0
                     explanation_rewards = behavior_rewards = None
