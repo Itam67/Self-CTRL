@@ -1,3 +1,4 @@
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -14,6 +15,20 @@ except Exception:
 
 # Turn on/off verbose logging for debugging.
 VERBOSE = True
+
+
+def wandb_required(cfg) -> bool:
+    """Whether losing wandb logging should abort the run.
+
+    Training metrics must never be silently lost, so wandb is required by
+    default. The two sanctioned opt-outs are explicit: WANDB_MODE=disabled (no
+    logging wanted) or WANDB_MODE=offline (still records locally, no network),
+    and the config flag wandb.required: false.
+    """
+    if os.environ.get("WANDB_MODE", "").lower() in ("disabled", "offline"):
+        return False
+    wandb_cfg = getattr(cfg, "wandb", None)
+    return bool(getattr(wandb_cfg, "required", True))
 
 
 # Conssistency configuration container
@@ -90,18 +105,27 @@ class ConsistencyTrainer:
         valid_mask = valid_mask.to(self.device)
         masked_rewards = rewards.masked_fill(~valid_mask, -1e9)
         m = valid_mask.to(rewards.dtype)
-        assert m.sum() > 0, "no valid actions in microbatch; loss divide by zero"
 
         # Store index of highest reward sample for each example in batch
         best_indices = masked_rewards.argmax(dim=1)
+
+        if m.sum() == 0:
+            # Every action in this microbatch is masked invalid (e.g. a coins
+            # example where no candidate program parsed). Contribute nothing
+            # rather than dividing by zero; multiplying through the nlls keeps
+            # the returned loss attached to the graph the caller backwards.
+            zero_loss = (actions_nlls * 0.0).sum()
+            return zero_loss, best_indices, torch.zeros_like(rewards), masked_rewards
 
         # Calculate advantages
         if rewards.shape[-1] == 1:
             # If only one sample per example, use reward itself as advantage
             advantages = rewards.detach()
         else:
-            # If multiple samples, calculate baseline and normalize advantages
-            denom = m.sum(dim=1, keepdim=True)
+            # If multiple samples, calculate baseline and normalize advantages.
+            # clamp_min keeps an all-masked ROW finite (mean/var are garbage
+            # there, but its m-row zeroes it out of the loss below).
+            denom = m.sum(dim=1, keepdim=True).clamp_min(1.0)
             mean = (rewards * m).sum(dim=1, keepdim=True) / denom
             var = ((rewards - mean) ** 2 * m).sum(dim=1, keepdim=True) / denom
             std = var.sqrt().clamp_min(0.05)
@@ -163,7 +187,15 @@ class ConsistencyTrainer:
 
         self.model.to(self.device)
 
-        # Initialize wandb (check if resuming previous run)
+        # Initialize wandb (check if resuming previous run). Strict by default:
+        # a run whose metrics silently vanish is worse than one that refuses to
+        # start — see wandb_required for the sanctioned opt-outs.
+        if not _WANDB_AVAILABLE and wandb_required(self.cfg):
+            raise RuntimeError(
+                "wandb is required but could not be imported. Install wandb, or "
+                "opt out explicitly with WANDB_MODE=offline (still records "
+                "locally), WANDB_MODE=disabled, or wandb.required: false."
+            )
         if _WANDB_AVAILABLE:
             try:
                 resume_id = getattr(self.cfg.wandb, "resume_id", None) or None
@@ -181,6 +213,13 @@ class ConsistencyTrainer:
                 wandb.define_metric("train/*", step_metric="train/examples_seen")
                 wandb.define_metric("holdout/*", step_metric="train/examples_seen")
             except Exception as e:
+                if wandb_required(self.cfg):
+                    raise RuntimeError(
+                        "wandb.init failed and wandb logging is required. Fix "
+                        "the wandb setup, or opt out explicitly with "
+                        "WANDB_MODE=offline / WANDB_MODE=disabled / "
+                        "wandb.required: false."
+                    ) from e
                 # Without this the run stays "available" but has no active run,
                 # and the first wandb.log below raises and kills training.
                 _WANDB_AVAILABLE = False
@@ -431,7 +470,11 @@ class ConsistencyTrainer:
                 self.optimizer.step()
                 examples_seen += N
 
-                # Logging
+                # Logging. Domain hooks (collect_* / phi) may queue extra
+                # scalars for this batch's payload under extra["log_metrics"];
+                # popped unconditionally so nothing accumulates when wandb is
+                # off.
+                queued_metrics = self.extra.pop("log_metrics", None)
                 if _WANDB_AVAILABLE:
                     log_payload = {
                         "train/avg_loss": total_loss_sum / max(N, 1),
@@ -459,6 +502,9 @@ class ConsistencyTrainer:
                         log_payload["train/untouched_kl_expl"] = (
                             total_untouched_kl_expl_sum / max(N, 1)
                         )
+
+                    if queued_metrics:
+                        log_payload.update(queued_metrics)
 
                     wandb.log(log_payload, step=examples_seen)
 

@@ -4,6 +4,10 @@ mode: lora
 seed: 42
 verbose_logging: true
 
+# torch.use_deterministic_algorithms(True, warn_only=True) + the cuBLAS
+# workspace setting. Missing deterministic kernels warn instead of crashing.
+deterministic: true
+
 # REQUIRED: the SFT checkpoint to start from (see configs/coins_sft.yaml).
 # The paper uses the end-of-epoch-4 checkpoint.
 load_dir: models/coins/sft/ckpt_29000
@@ -29,10 +33,23 @@ learning:
   # distribution from drifting while the explanation side moves.
   cont_training_loss_weight: 0.3
 
+  # Reward for a candidate program that doesn't parse. A number keeps such
+  # candidates IN the GRPO group with this fixed reward, so their
+  # group-relative advantage is negative and REINFORCE pushes probability away
+  # from the broken format. A valid program's reward is a per-flip log
+  # likelihood bounded below by log(1e-6) ~= -13.8 (see phi in
+  # domains/coins/train.py), so -15.0 sits strictly below anything a valid
+  # candidate can earn. null = legacy behavior: mask invalid candidates out of
+  # the update entirely (zero gradient).
+  invalid_candidate_reward: -15.0
+
 sampling:
   n_beams: 10              # K candidate programs scored per update
   num_cands: 5             # generation batch size
-  max_new_tokens: 150
+  max_new_tokens: 150      # program cap (verbalization side)
+  # Rollout cap: prompts ask for 100 flips ~= 2 tokens each, so 200 keeps
+  # every H/T rollout (training, eval, and behavior anchors) untruncated.
+  rollout_max_new_tokens: 200
   temp: 1.0
   top_p: 0.9
 

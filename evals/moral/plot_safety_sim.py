@@ -1,4 +1,4 @@
-"""Safety vs. Simulatability scatter with Pareto frontier."""
+"""Safety vs. Simulatability scatter, with the three λ conditions connected."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 from evals.manifest import figure_argparser, prepare_figure
 from evals.figure_utils import apply_serif_font, load_metrics, prop_ci
-from evals.plot_style import PALETTE, apply_style, role_style
+from evals.plot_style import apply_style, role_style
 
 DEFAULT_OUT_NAME = "safety_vs_simulatability_scatter.pdf"
 
@@ -28,6 +28,11 @@ NSG_N_KEY = "n_strict" if NSG_KEY == "nsg_strict" else "n_relaxed"
 # The three λ "update" methods get larger markers + dark labels
 LAMBDA_ROLES = {"expl", "mixed", "beh"}
 
+# Order the connecting line walks the λ sweep: λ=0 -> 0.5 -> 1.0. Roles absent
+# from the manifest are skipped, so a partial deck still draws what it has.
+LAMBDA_LINE_ORDER = ("expl", "mixed", "beh")
+LAMBDA_LINE_LABEL = "λ sweep (0 → 0.5 → 1.0)"
+
 # Introspective baselines: drawn as a gray marker under the role-colored outline
 # of the method they ablate (dark blue -> ablates Expl., dark orange -> Beh.).
 BASELINE_ROLES = {"expl_baseline", "beh_baseline"}
@@ -36,13 +41,15 @@ BASELINE_ROLES = {"expl_baseline", "beh_baseline"}
 def _role_colors(role: str) -> tuple[str, str, float]:
     """(facecolor, edgecolor, edge linewidth) for a role in this figure.
 
-    Colors come from the shared plot_style palette; this figure applies two
-    overrides on top: the ablation baselines swap their fill for gray so the
-    outline carries the role, and every other role takes a plain black outline.
+    Colors come from the shared plot_style palette, whose moral roles are the
+    paper's BAR_CONDITIONS verbatim. Matching the paper's scatter: the ablation
+    baselines keep their own gray-ramp fill and carry a thicker colored outline
+    tying them to the method they ablate; every other role takes a plain black
+    outline.
     """
     face, edge = role_style(role)
     if role in BASELINE_ROLES:
-        return PALETTE["gray"], edge, 1.8
+        return face, edge, 1.8
     return face, "black", 0.8
 
 
@@ -69,18 +76,27 @@ def _shared_axes(ax):
     ax.grid(True, ls=":", color="#cccccc")
 
 
-def _add_pareto(ax, points):
-    """points: list of (label, x, y). Draw a gray dashed line through the
-    Pareto-optimal points (maximize both x and y)."""
-    sorted_pts = sorted(points, key=lambda p: (-p[1], -p[2]))
-    frontier, best = [], -float("inf")
-    for p in sorted_pts:
-        if p[2] > best:
-            frontier.append(p)
-            best = p[2]
-    fx = [p[1] for p in frontier]
-    fy = [p[2] for p in frontier]
-    ax.plot(fx, fy, color="#888888", lw=1.4, ls="--", zorder=1, label="Pareto frontier")
+def _add_lambda_line(ax, points):
+    """points: list of (role, x, y). Connect the three λ update methods in λ
+    order (0 -> 0.5 -> 1.0).
+
+    This traces the sweep the figure is about, so it is drawn through all three
+    regardless of Pareto dominance. The previous version drew the Pareto
+    frontier instead, which silently dropped any dominated λ — and a dominated
+    behavior-training point is precisely what the reader needs to see."""
+    by_role = {role: (x, y) for role, x, y in points}
+    line = [by_role[r] for r in LAMBDA_LINE_ORDER if r in by_role]
+    if len(line) < 2:
+        return
+    ax.plot(
+        [p[0] for p in line],
+        [p[1] for p in line],
+        color="#888888",
+        lw=1.4,
+        ls="--",
+        zorder=1,
+        label=LAMBDA_LINE_LABEL,
+    )
 
 
 def _draw_point(ax, role, x, y, x_err=None, y_err=None):
@@ -149,15 +165,15 @@ def build_figure(conditions, variant: str, out_path: Path):
                 y_err = [[yc[0]], [yc[1]]]
         drawn.append((cond.label, cond.role, x, y, x_err, y_err))
 
-    _add_pareto(ax, [(L, x, y) for L, _, x, y, *_ in drawn])
+    _add_lambda_line(ax, [(role, x, y) for _, role, x, y, *_ in drawn])
     for label, role, x, y, x_err, y_err in drawn:
         _draw_point(ax, role, x, y, x_err=x_err, y_err=y_err)
         _label_point(ax, role, label, x, y)
 
-    # Pareto frontier shown as a single-entry legend in the open upper-right.
+    # The λ line shown as a single-entry legend in the open upper-right.
     handles, labels = ax.get_legend_handles_labels()
     for h, l in zip(handles, labels):
-        if l == "Pareto frontier":
+        if l == LAMBDA_LINE_LABEL:
             ax.legend([h], [l], loc="upper right", frameon=False, fontsize=11)
             break
 

@@ -15,7 +15,7 @@ from consistency.model_utils import (
 )
 from domains.coins.data import DATA_DIR, coin_groups
 from domains.coins.program import program_biases
-from evals.coins.stats import mode_of_samples
+from evals.coins.stats import mean_of_samples, mode_of_samples
 
 
 BASE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -44,11 +44,10 @@ def prompt_templates(cons_path=None):
     if coin not in verb or coin not in rollout:
         raise RuntimeError(f"{coin} missing from its own prompts in {cons_path}")
 
-    # The consistency data carries six rollout paraphrases and record 0 happens
-    # to hold the one misspelling "seperated". Every SFT corpus says "separated",
-    # so templating off record 0 verbatim would probe all 100 coins with a string
-    # the model was never trained on.
-    rollout = rollout.replace("space seperated", "space separated")
+    # The consistency data originally carried one rollout paraphrase that
+    # misspelled "separated" (record 0 held it); the shipped JSONLs have been
+    # corrected to match the SFT corpora (see DIVERGENCES.md), so the record
+    # templates verbatim.
 
     return verb.replace(coin, _TEMPLATE_COIN), rollout.replace(coin, _TEMPLATE_COIN)
 
@@ -72,9 +71,18 @@ def _build_metrics(records):
         key = group or "all"
         if not rows:
             continue
-        stated = [r["pred_bias"] for r in rows]
-        metrics[f"r2_gt_{key}"] = r2(stated, [r["gt_bias"] for r in rows])
-        metrics[f"r2_rollout_{key}"] = r2(stated, [r["rollout_bias"] for r in rows])
+        stated_mode = [r["pred_mode"] for r in rows]
+        stated_mean = [r["pred_mean"] for r in rows]
+        gt = [r["gt_bias"] for r in rows]
+        rollout = [r["rollout_bias"] for r in rows]
+        # Unsuffixed keys kept for backward compat; they are the mode-of-K
+        # numbers, same as r2_*_mode_*.
+        metrics[f"r2_gt_{key}"] = r2(stated_mode, gt)
+        metrics[f"r2_rollout_{key}"] = r2(stated_mode, rollout)
+        metrics[f"r2_gt_mode_{key}"] = r2(stated_mode, gt)
+        metrics[f"r2_gt_mean_{key}"] = r2(stated_mean, gt)
+        metrics[f"r2_rollout_mode_{key}"] = r2(stated_mode, rollout)
+        metrics[f"r2_rollout_mean_{key}"] = r2(stated_mean, rollout)
         metrics[f"n_{key}"] = len(rows)
 
     unparsed = sum(1 for r in records if not r["pred_bias_samples"])
@@ -157,7 +165,12 @@ def run_per_coin(
                 # The mode over the K samples, which is what plot_calibration
                 # plots. Taking samples[0] instead would make the metrics printed
                 # here a different (much noisier) statistic from the figure's.
+                # Kept for backward compat; identical to pred_mode.
                 "pred_bias": mode_of_samples(samples) if samples else None,
+                # Both estimators, explicitly named. The figure plots the mode;
+                # the mean is reported alongside everywhere R^2 is computed.
+                "pred_mode": mode_of_samples(samples) if samples else None,
+                "pred_mean": mean_of_samples(samples) if samples else None,
                 "rollout_h": h,
                 "rollout_n": h + t,
                 "rollout_bias": (h / (h + t)) if (h + t) else None,
@@ -184,9 +197,12 @@ def run_per_coin(
     print(f"  coins={metrics['n_coins']}  "
           f"no parseable program={metrics['n_no_parseable_program']}")
     for group in ("sft", "cons", "holdout"):
-        if f"r2_gt_{group}" in metrics:
-            print(f"  {group:>8}: R2(stated|gt)={metrics[f'r2_gt_{group}']:.4f}  "
-                  f"R2(stated|rollout)={metrics[f'r2_rollout_{group}']:.4f}  "
+        if f"r2_gt_mode_{group}" in metrics:
+            print(f"  {group:>8}: "
+                  f"R2(stated|gt) mode={metrics[f'r2_gt_mode_{group}']:.4f} "
+                  f"mean={metrics[f'r2_gt_mean_{group}']:.4f}  "
+                  f"R2(stated|rollout) mode={metrics[f'r2_rollout_mode_{group}']:.4f} "
+                  f"mean={metrics[f'r2_rollout_mean_{group}']:.4f}  "
                   f"n={metrics[f'n_{group}']}")
 
     if output_dir:

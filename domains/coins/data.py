@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import random
-import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -167,55 +165,53 @@ class CoinsConsDataset(torch.utils.data.Dataset):
         return item
 
 
-# Fallback matcher for one probability in a dict literal that ast couldn't read.
-# The number must be COMPLETE: the lookahead requires the next non-space
-# character to close the value (a comma or the closing brace). Without it a
-# pattern like [0-9]*\.?[0-9]+ matches the leading "0" of a malformed token such
-# as `0.T1` and reports a confident, wrong bias of 0.0 — which a sum-to-1 check
-# does not reliably catch, since `{"H": 0.T1, "T": 1.0}` still sums to 1.
-_PROB_RE = r'["\']{key}["\']\s*:\s*([0-9]*\.?[0-9]+)\s*(?=[,}}])'
-
-
-def _match_prob(dict_src: str, key: str) -> Optional[float]:
-    """The probability stated for `key`, or None if it isn't a complete number."""
-    m = re.search(_PROB_RE.format(key=key), dict_src)
-    return float(m.group(1)) if m else None
-
-
 def parse_head_prob(program: str) -> Tuple[float, float]:
-    """Extract (p_heads, p_tails) from a generated flip_Coin_X() program.
+    """Extract (p_heads, p_tails) stated by a generated flip_Coin_X() program.
 
-    The program is never executed — the returned dict literal is located after
-    `return` and read. Falls back to pulling the two floats out with a regex
-    when the literal doesn't parse (models occasionally emit junk like `0.T1`).
+    Reproduces the acceptance rule of the parser that produced the paper's
+    numbers (sample_consistency coin_program.py:run_oocr_program), because the
+    rule shapes both training (GRPO valid mask) and eval (the K-sample sets):
+    the text is scanned for the literal '"H": ' and at most five digit/period
+    characters after it are read as p_heads. T is never read — p_tails is
+    reconstructed as 1 - p_heads, and a stated T that doesn't complement H is
+    ignored. Quirks kept deliberately: single-quoted keys or a missing space
+    after the colon are rejected; a number longer than five characters is
+    truncated, not rounded; a number running to the very end of the string is
+    rejected.
 
-    Raises ValueError if no probabilities can be recovered.
+    Raises ValueError if no probability in [0, 1] can be recovered.
     """
-    m = re.search(r"return\s*(\{.*?\})", program, flags=re.S)
-    if not m:
-        raise ValueError(f"no return dict found in program: {program!r}")
+    j = program.find('"H": ')
+    if j == -1:
+        raise ValueError(f"no '\"H\": ' literal found in program: {program!r}")
 
-    dict_src = m.group(1)
+    start = j + 5
+    counter = 0
+    period = False
     try:
-        parsed = ast.literal_eval(dict_src)
-        h = float(parsed["H"])
-        t = float(parsed["T"])
-    except Exception:
-        mh = _match_prob(dict_src, "H")
-        mt = _match_prob(dict_src, "T")
-        if mh is None or mt is None:
-            raise ValueError(f"could not parse H/T floats from: {dict_src!r}") from None
-        h, t = mh, mt
+        while counter < 5 and (
+            program[start + counter].isdigit()
+            or (program[start + counter] == "." and not period)
+        ):
+            if program[start + counter] == ".":
+                period = True
+            counter += 1
+    except IndexError:
+        raise ValueError(
+            f"probability runs to the end of the program: {program!r}"
+        ) from None
 
-    if not 0.0 <= h <= 1.0 or not 0.0 <= t <= 1.0:
-        raise ValueError(f"H={h}, T={t} outside [0, 1] in: {dict_src!r}")
+    try:
+        h = round(float(program[start : start + counter]), 3)
+    except ValueError:
+        raise ValueError(
+            f"could not read a number after '\"H\": ' in: {program!r}"
+        ) from None
 
-    # A pair that doesn't sum to 1 isn't a distribution, so the program doesn't
-    # state a usable bias regardless of how cleanly it parsed.
-    if abs((h + t) - 1.0) > 1e-6:
-        raise ValueError(f"H={h} and T={t} do not sum to 1 in: {dict_src!r}")
+    if not 0.0 <= h <= 1.0:
+        raise ValueError(f"H={h} outside [0, 1] in: {program!r}")
 
-    return h, t
+    return h, 1.0 - h
 
 
 # Behavior-preserving anchors
@@ -224,9 +220,11 @@ def ensure_behavior_anchors(
     tokenizer,
     rollout_prompts: List[str],
     cache_path,
-    max_new_tokens: int = 150,
+    # Anchors are H/T rollouts: the prompts ask for 100 flips ~= 2 tokens each,
+    # so 200 keeps them untruncated (matches sampling.rollout_max_new_tokens).
+    max_new_tokens: int = 200,
     batch_size: int = 16,
-    seed: int = 42,
+    seed: Optional[int] = 42,
 ) -> Tuple[List[str], List[str]]:
     """Sample one rollout per prompt from the current (SFT-initialised) policy
     and freeze it, so consistency training can anchor the behavior distribution.
@@ -244,7 +242,7 @@ def ensure_behavior_anchors(
     property of the shipped dataset.
     """
     # Lazy: pulls in peft/transformers, which the pure readers above don't need.
-    from consistency.model_utils import sample_conts_gen
+    from consistency.model_utils import derive_seed, sample_conts_gen
 
     cache_path = Path(cache_path)
     if cache_path.exists():
@@ -258,7 +256,6 @@ def ensure_behavior_anchors(
             "set, resampling"
         )
 
-    torch.manual_seed(seed)
     completions: List[str] = []
 
     # The caller hands us a model loaded for training, so it is in train mode
@@ -267,23 +264,37 @@ def ensure_behavior_anchors(
     # eval for the sampling pass and restore whatever mode we found.
     was_training = model.training
     model.eval()
+
+    # Seed inside a forked RNG so this one-off pass cannot perturb the global
+    # stream the training run that follows depends on. Anchors are sampled once
+    # per run, so a fixed derived seed (no step index) is correct here.
+    if seed is not None and torch.cuda.is_available():
+        fork_devices = list(range(torch.cuda.device_count()))
+    else:
+        fork_devices = []
     try:
-        for batch in tqdm(
-            DataLoader(rollout_prompts, batch_size=batch_size),
-            desc="Sampling behavior anchors",
-        ):
-            batch_conts, _, _ = sample_conts_gen(
-                model,
-                tokenizer,
-                list(batch),
-                max_new_tokens=max_new_tokens,
-                # Anchors must come from the policy's own unmodified rollout
-                # distribution, so no temperature or nucleus truncation here.
-                temperature=1.0,
-                top_p=1.0,
-                greedily=False,
-            )
-            completions += batch_conts
+        with torch.random.fork_rng(devices=fork_devices, enabled=seed is not None):
+            if seed is not None:
+                anchor_seed = derive_seed(seed, "anchors")
+                torch.manual_seed(anchor_seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(anchor_seed)
+            for batch in tqdm(
+                DataLoader(rollout_prompts, batch_size=batch_size),
+                desc="Sampling behavior anchors",
+            ):
+                batch_conts, _, _ = sample_conts_gen(
+                    model,
+                    tokenizer,
+                    list(batch),
+                    max_new_tokens=max_new_tokens,
+                    # Anchors must come from the policy's own unmodified rollout
+                    # distribution, so no temperature or nucleus truncation here.
+                    temperature=1.0,
+                    top_p=1.0,
+                    greedily=False,
+                )
+                completions += batch_conts
     finally:
         model.train(was_training)
 

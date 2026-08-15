@@ -18,6 +18,10 @@ mode: lora
 seed: 42
 verbose_logging: true
 
+# torch.use_deterministic_algorithms(True, warn_only=True) + the cuBLAS
+# workspace setting. Missing deterministic kernels warn instead of crashing.
+deterministic: true
+
 # Warm start: path to an adapter to resume from. Null trains a fresh adapter.
 load_dir: null
 

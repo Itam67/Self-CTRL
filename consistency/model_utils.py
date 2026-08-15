@@ -1,3 +1,5 @@
+import hashlib
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Any, Dict, List, Optional, Tuple
@@ -90,7 +92,7 @@ def load_model_tok(
         model = get_peft_model(model, lcfg)
         model.print_trainable_parameters()
 
-    else:
+    elif mode != "full":
         raise ValueError("MODE must be 'full' or 'lora'.")
 
     return model, tok
@@ -137,6 +139,17 @@ def ensure_pad(tokenizer):
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer.pad_token_id, prev
+
+
+# Seeding utilities
+def derive_seed(base_seed: int, stream: str, index: int = 0) -> int:
+    """Derive a distinct seed per (stream, index) from one base seed.
+
+    Uses sha256 rather than Python's builtin hash(), which is salted per process
+    and therefore not reproducible across runs. Returns an int in [0, 2**63).
+    """
+    digest = hashlib.sha256(f"{base_seed}/{stream}/{index}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % (2**63)
 
 
 # Generation utilities
@@ -263,93 +276,107 @@ def sample_k_conts_gen(
     # perturb both the drawn candidates and the gradients computed from them.
     model.eval()
 
-    if seed is not None:
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+    # Seed inside a forked RNG so this call cannot perturb the global stream:
+    # seeding in place here would replace the training run's RNG state and never
+    # restore it. The fork must cover EVERY generate call in the batch loop
+    # below, so the whole sampling body lives inside it. manual_seed_all touches
+    # every CUDA device, so fork them all (this includes the model's device).
+    # With seed=None the context is disabled and nothing is seeded, as before.
+    if seed is not None and torch.cuda.is_available():
+        fork_devices = list(range(torch.cuda.device_count()))
+    else:
+        fork_devices = []
 
-    # Check that a system prompt exists for each prompt if provided
-    if system_prompts is not None:
-        assert len(system_prompts) == len(prompts)
+    with torch.random.fork_rng(devices=fork_devices, enabled=seed is not None):
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
-    # Build the prompt string up to assistant header
-    prompt_text = [
-        build_prompt_text(
-            tokenizer, system_prompts[i] if system_prompts is not None else None, p
-        )
-        for i, p in enumerate(prompts)
-    ]
+        # Check that a system prompt exists for each prompt if provided
+        if system_prompts is not None:
+            assert len(system_prompts) == len(prompts)
 
-    # PAD handling + left pad for generation
-    pad_id, old_side = ensure_pad(tokenizer)
-    tokenizer.padding_side = "left"
+        # Build the prompt string up to assistant header
+        prompt_text = [
+            build_prompt_text(
+                tokenizer, system_prompts[i] if system_prompts is not None else None, p
+            )
+            for i, p in enumerate(prompts)
+        ]
 
-    eos_id = tokenizer.eos_token_id
-    pad_id = tokenizer.pad_token_id
+        # PAD handling + left pad for generation
+        pad_id, old_side = ensure_pad(tokenizer)
+        tokenizer.padding_side = "left"
 
-    all_conts: List[List[str]] = []
-    all_avg_logps: List[List[float]] = []
+        eos_id = tokenizer.eos_token_id
+        pad_id = tokenizer.pad_token_id
 
-    for start in range(0, len(prompt_text), batch_size):
-        end = min(start + batch_size, len(prompt_text))
-        p_batch = prompt_text[start:end]
-        B = len(p_batch)
+        all_conts: List[List[str]] = []
+        all_avg_logps: List[List[float]] = []
 
-        enc = tokenizer(p_batch, return_tensors="pt", padding=True).to(model.device)
-        padded_input_len = enc["input_ids"].shape[1]
+        for start in range(0, len(prompt_text), batch_size):
+            end = min(start + batch_size, len(prompt_text))
+            p_batch = prompt_text[start:end]
+            B = len(p_batch)
 
-        out = model.generate(
-            **enc,
-            do_sample=not greedily,
-            num_beams=1,
-            num_return_sequences=k,  # k samples per prompt
-            temperature=temperature,
-            top_p=top_p,
-            max_new_tokens=max_new_tokens,
-            return_dict_in_generate=True,
-            output_scores=True,  # needed for avg logp
-            use_cache=True,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+            enc = tokenizer(p_batch, return_tensors="pt", padding=True).to(
+                model.device
+            )
+            padded_input_len = enc["input_ids"].shape[1]
 
-        sequences = out.sequences  # (B*k, padded_input_len + Tgen)
-        Bk = sequences.shape[0]
-
-        # Decode continuations
-        cont_ids = sequences[:, padded_input_len:]  # only generated tokens
-        conts_flat = tokenizer.batch_decode(cont_ids, skip_special_tokens=True)
-        conts_flat = [c.strip() for c in conts_flat]
-
-        # Compute mean log-prob over generated continuation
-        scores = torch.stack(out.scores, dim=1).float()  # (B*k, Tgen, V)
-        logprobs = F.log_softmax(scores, dim=-1)  # (B*k, Tgen, V)
-        Tgen = logprobs.shape[1]
-
-        gen_token_ids = sequences[
-            :, padded_input_len : padded_input_len + Tgen
-        ]  # (B*k, Tgen)
-
-        token_logprobs = logprobs.gather(-1, gen_token_ids.unsqueeze(-1)).squeeze(
-            -1
-        )  # (B*k, Tgen)
-
-        is_pad = (pad_id is not None) & (gen_token_ids == pad_id)
-        is_eos = (eos_id is not None) & (gen_token_ids == eos_id)
-        valid = ~(is_pad | is_eos)
-
-        avg_logps_flat: List[float] = []
-        for i in range(Bk):
-            vp = token_logprobs[i][valid[i]]
-            avg_logps_flat.append(
-                float(vp.mean().item()) if vp.numel() else float("-inf")
+            out = model.generate(
+                **enc,
+                do_sample=not greedily,
+                num_beams=1,
+                num_return_sequences=k,  # k samples per prompt
+                temperature=temperature,
+                top_p=top_p,
+                max_new_tokens=max_new_tokens,
+                return_dict_in_generate=True,
+                output_scores=True,  # needed for avg logp
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
             )
 
-        # Group back to [B][k]
-        for b in range(B):
-            s, e = b * k, (b + 1) * k
-            all_conts.append(conts_flat[s:e])
-            all_avg_logps.append(avg_logps_flat[s:e])
+            sequences = out.sequences  # (B*k, padded_input_len + Tgen)
+            Bk = sequences.shape[0]
+
+            # Decode continuations
+            cont_ids = sequences[:, padded_input_len:]  # only generated tokens
+            conts_flat = tokenizer.batch_decode(cont_ids, skip_special_tokens=True)
+            conts_flat = [c.strip() for c in conts_flat]
+
+            # Compute mean log-prob over generated continuation
+            scores = torch.stack(out.scores, dim=1).float()  # (B*k, Tgen, V)
+            logprobs = F.log_softmax(scores, dim=-1)  # (B*k, Tgen, V)
+            Tgen = logprobs.shape[1]
+
+            gen_token_ids = sequences[
+                :, padded_input_len : padded_input_len + Tgen
+            ]  # (B*k, Tgen)
+
+            token_logprobs = logprobs.gather(-1, gen_token_ids.unsqueeze(-1)).squeeze(
+                -1
+            )  # (B*k, Tgen)
+
+            is_pad = (pad_id is not None) & (gen_token_ids == pad_id)
+            is_eos = (eos_id is not None) & (gen_token_ids == eos_id)
+            valid = ~(is_pad | is_eos)
+
+            avg_logps_flat: List[float] = []
+            for i in range(Bk):
+                vp = token_logprobs[i][valid[i]]
+                avg_logps_flat.append(
+                    float(vp.mean().item()) if vp.numel() else float("-inf")
+                )
+
+            # Group back to [B][k]
+            for b in range(B):
+                s, e = b * k, (b + 1) * k
+                all_conts.append(conts_flat[s:e])
+                all_avg_logps.append(avg_logps_flat[s:e])
 
     # Restore original padding side
     tokenizer.padding_side = old_side

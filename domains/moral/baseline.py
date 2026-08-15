@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -125,6 +126,13 @@ def phi_baseline_introspective(behaviors, explanations, model, tokenizer, cfg, e
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:
+
+    # Config-driven determinism (default on). warn_only downgrades a missing
+    # deterministic kernel to a warning instead of a crash, and the cuBLAS
+    # workspace variable must be set before the first CUDA matmul.
+    if bool(getattr(cfg, "deterministic", True)):
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -6,6 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import json
+import os
+
 import hydra
 import torch
 import numpy as np
@@ -17,6 +19,7 @@ from contextlib import nullcontext
 
 from consistency.trainer import ConsistencyConfig, ConsistencyTrainer
 from consistency.model_utils import (
+    derive_seed,
     load_model_tok,
     sample_conts_gen,
     sample_k_conts_gen,
@@ -123,6 +126,19 @@ def collect_behaviors(model, tokenizer, moral_prompts: List[str], cfg, extra) ->
         judgement_nlls: torch.Tensor [B, K]
     """
 
+    # Fresh sampling noise each call: reusing one fixed seed here would replay
+    # the identical RNG stream at every training step, correlated dice the
+    # policy can adapt to. The counter lives in the trainer's `extra`, so it
+    # keeps incrementing across micro-batches, batches, and epochs.
+    step = int(extra.get("behaviors_sampling_step", 0)) if extra is not None else 0
+    if extra is not None:
+        extra["behaviors_sampling_step"] = step + 1
+    seed = (
+        derive_seed(int(cfg.seed), "behaviors", step)
+        if getattr(cfg, "seed", None) is not None
+        else None
+    )
+
     # Generate K candidates per prompt (mirrors collect_moral_explanations)
     behaviors, _ = sample_k_conts_gen(
         model,
@@ -134,7 +150,7 @@ def collect_behaviors(model, tokenizer, moral_prompts: List[str], cfg, extra) ->
         top_p=cfg.sampling.top_p,
         greedily=False,
         batch_size=cfg.sampling.num_cands,
-        seed=cfg.seed,
+        seed=seed,
     )
 
     # Recompute nll of candidates [B, K]
@@ -165,6 +181,16 @@ def collect_explanations(
     B = len(explanation_prompts)
     system_prompts = [MORAL_SYSTEM_PROMPT] * B
 
+    # Per-step derived seed for the same reason as in collect_behaviors.
+    step = int(extra.get("programs_sampling_step", 0)) if extra is not None else 0
+    if extra is not None:
+        extra["programs_sampling_step"] = step + 1
+    seed = (
+        derive_seed(int(cfg.seed), "programs", step)
+        if getattr(cfg, "seed", None) is not None
+        else None
+    )
+
     # Generate K candidates per prompt (mirrors collect_behaviors)
     explanations, _ = sample_k_conts_gen(
         model,
@@ -176,7 +202,7 @@ def collect_explanations(
         top_p=cfg.sampling.top_p,
         greedily=False,
         batch_size=cfg.sampling.num_cands,
-        seed=cfg.seed,
+        seed=seed,
         system_prompts=system_prompts,
     )
 
@@ -940,6 +966,13 @@ def full_eval(model, tokenizer, val_loader, device, cfg, extra):
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:
+
+    # Config-driven determinism (default on). warn_only downgrades a missing
+    # deterministic kernel to a warning instead of a crash, and the cuBLAS
+    # workspace variable must be set before the first CUDA matmul.
+    if bool(getattr(cfg, "deterministic", True)):
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -1,5 +1,6 @@
 """Supervised stage for the coins domain — the prerequisite for consistency training."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,13 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import ConcatDataset, DataLoader
 
 from consistency.data_utils import collate_prompt_output
-from consistency.model_utils import get_amp_context, load_model_tok, sample_conts_gen
+from consistency.model_utils import (
+    derive_seed,
+    get_amp_context,
+    load_model_tok,
+    sample_conts_gen,
+)
+from consistency.trainer import wandb_required
 from domains.coins.data import (
     SFTDataset,
     coin_groups,
@@ -40,11 +47,14 @@ ROLLOUT_PROMPT = (
 )
 
 
-def _set_seed(seed: int) -> None:
+def _set_seed(seed: int) -> torch.Generator:
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return g
 
 
 ### Evaluation ###
@@ -80,15 +90,32 @@ def evaluate_rollout_bias(
     prompts = [
         ROLLOUT_PROMPT.format(coin=name, n=int(cfg.num_flips)) for name in coin_names
     ]
-    continuations, _, _ = sample_conts_gen(
-        model,
-        tokenizer,
-        prompts=prompts,
-        max_new_tokens=int(cfg.num_flips) * 2,
-        temperature=1.0,
-        top_p=1.0,
-        greedily=False,
-    )
+
+    # Sample inside a forked RNG with a fixed derived seed: generation here
+    # would otherwise consume the global stream, so how often this eval runs
+    # (eval_every) would perturb the epoch>=2 shuffle order of training.
+    # Deliberately step-independent seed: every eval point draws the same
+    # sampling noise, so checkpoints are compared paired — mirrors the
+    # cons-stage eval_fn in domains/coins/train.py. fork_rng covers all CUDA
+    # devices because manual_seed_all touches every one.
+    if torch.cuda.is_available():
+        fork_devices = list(range(torch.cuda.device_count()))
+    else:
+        fork_devices = []
+    with torch.random.fork_rng(devices=fork_devices):
+        eval_seed = derive_seed(int(cfg.seed), "eval")
+        torch.manual_seed(eval_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(eval_seed)
+        continuations, _, _ = sample_conts_gen(
+            model,
+            tokenizer,
+            prompts=prompts,
+            max_new_tokens=int(cfg.num_flips) * 2,
+            temperature=1.0,
+            top_p=1.0,
+            greedily=False,
+        )
 
     abs_errs, kept_names = [], []
     for name, gt, cont in zip(coin_names, biases, continuations):
@@ -192,9 +219,28 @@ def train(model, tokenizer, train_loader, val_loader, optim, coins, biases, devi
 def main(cfg: DictConfig) -> None:
     global _WANDB_AVAILABLE
 
-    _set_seed(int(cfg.seed))
+    # Config-driven determinism (default on). warn_only downgrades a missing
+    # deterministic kernel to a warning instead of a crash, and the cuBLAS
+    # workspace variable must be set before the first CUDA matmul.
+    if bool(getattr(cfg, "deterministic", True)):
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+    # The generator owns the train loader's shuffle order, so generation during
+    # mid-training evals (which draws from the global stream when unseeded)
+    # cannot perturb which batches epoch >= 2 sees.
+    shuffle_gen = _set_seed(int(cfg.seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Strict by default: metrics must never be silently lost. See
+    # consistency.trainer.wandb_required for the sanctioned opt-outs
+    # (WANDB_MODE=offline/disabled or wandb.required: false).
+    if not _WANDB_AVAILABLE and wandb_required(cfg):
+        raise RuntimeError(
+            "wandb is required but could not be imported. Install wandb, or "
+            "opt out explicitly with WANDB_MODE=offline (still records "
+            "locally), WANDB_MODE=disabled, or wandb.required: false."
+        )
     if _WANDB_AVAILABLE:
         try:
             wandb.init(
@@ -203,6 +249,12 @@ def main(cfg: DictConfig) -> None:
                 config=OmegaConf.to_container(cfg, resolve=True),
             )
         except Exception as exc:
+            if wandb_required(cfg):
+                raise RuntimeError(
+                    "wandb.init failed and wandb logging is required. Fix the "
+                    "wandb setup, or opt out explicitly with WANDB_MODE=offline "
+                    "/ WANDB_MODE=disabled / wandb.required: false."
+                ) from exc
             # Without this the log sites below still fire with no active run,
             # and wandb.log raises.
             _WANDB_AVAILABLE = False
@@ -256,6 +308,7 @@ def main(cfg: DictConfig) -> None:
         shuffle=True,
         collate_fn=collate,
         pin_memory=torch.cuda.is_available(),
+        generator=shuffle_gen,
     )
     val_loader = DataLoader(
         SFTDataset(val_prompts, val_outputs),

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import json
 import math
+import os
 from typing import List, Optional
 
 import hydra
@@ -20,6 +21,7 @@ from torch.utils.data import DataLoader
 from consistency.model_utils import (
     compute_nll,
     cont_training_loss,
+    derive_seed,
     load_model_tok,
     sample_conts_gen,
     sample_k_conts_gen,
@@ -107,6 +109,25 @@ def load_data(cfg) -> tuple:
     return train_loader, val_loader, extra
 
 
+def _check_all_fail_rate(extra, threshold: float = 0.05, min_fails: int = 3) -> None:
+    """Abort once all-fail examples exceed `threshold` of examples seen so far.
+
+    Running threshold over the whole run, not per epoch. min_fails is a grace
+    count so a single early failure (1/1 = 100%) doesn't kill a healthy run
+    before the denominator is meaningful.
+    """
+    if extra is None:
+        return
+    fails = int(extra.get("all_fail_examples", 0))
+    seen = int(extra.get("parse_examples_seen", 0))
+    if fails >= min_fails and fails > threshold * seen:
+        raise RuntimeError(
+            f"{fails}/{seen} training examples so far had NO parseable candidate "
+            f"program (> {threshold:.0%}). The policy has likely collapsed away "
+            "from the program format; aborting instead of training on noise."
+        )
+
+
 def collect_explanations(
     model, tokenizer, explanation_prompts: List[str], cfg, extra=None
 ) -> tuple:
@@ -120,10 +141,26 @@ def collect_explanations(
 
     Note the asymmetry with the moral domain: an explanation here is scored as a
     NUMBER, but the policy is updated through the NLL of the PROGRAM TEXT that
-    produced it. Candidates whose text doesn't parse are masked out rather than
-    dropped, so the [B, K] shape the trainer asserts on stays rectangular.
+    produced it. Candidates whose text doesn't parse keep the -1.0 placeholder
+    bias, so the [B, K] shape the trainer asserts on stays rectangular; whether
+    they are penalized in-group or masked out of the update is decided by
+    cfg.learning.invalid_candidate_reward (see below). An example where ALL K
+    candidates fail is masked out entirely and counted, never fatal.
     """
     coin_names = [coin_from_prompt(p) for p in explanation_prompts]
+
+    # Fresh sampling noise each call: reusing one fixed seed here would replay
+    # the identical RNG stream at every training step, correlated dice the
+    # policy can adapt to. The counter lives in the trainer's `extra`, so it
+    # keeps incrementing across micro-batches, batches, and epochs.
+    step = int(extra.get("programs_sampling_step", 0)) if extra is not None else 0
+    if extra is not None:
+        extra["programs_sampling_step"] = step + 1
+    seed = (
+        derive_seed(int(cfg.seed), "programs", step)
+        if getattr(cfg, "seed", None) is not None
+        else None
+    )
 
     programs, _ = sample_k_conts_gen(
         model,
@@ -135,16 +172,82 @@ def collect_explanations(
         top_p=cfg.sampling.top_p,
         greedily=False,
         batch_size=cfg.sampling.num_cands,
-        seed=cfg.seed,
+        seed=seed,
     )
 
+    # Penalty mode (GRPO-standard, the default): a number here keeps candidates
+    # that don't parse IN the group with this fixed low reward (assigned in
+    # phi), so their group-relative advantage is negative and REINFORCE
+    # actively pushes probability away from them. null restores the legacy
+    # behavior of masking them out of the update (zero gradient).
+    invalid_reward = getattr(cfg.learning, "invalid_candidate_reward", None)
+
     biases, masks = [], []
+    n_parsed = 0
+    n_candidates = 0
     for i, candidates in enumerate(programs):
-        coin_biases, mask = program_biases(
-            candidates, coin_names[i], seed=int(cfg.seed)
-        )
+        n_candidates += len(candidates)
+        try:
+            coin_biases, mask = program_biases(
+                candidates, coin_names[i], seed=int(cfg.seed)
+            )
+            n_parsed += int(mask.sum())
+            if invalid_reward is not None:
+                # Keep every candidate in the advantage normalization; the
+                # -1.0 placeholder bias is what phi keys the penalty on.
+                mask = torch.ones(len(candidates), dtype=torch.bool)
+        except RuntimeError:
+            # Every candidate failed to parse. The eval path catches this and
+            # skips the coin; during training it must not kill the run, so
+            # mask all K candidates out (the trainer skips an all-masked
+            # example's contribution). This holds in penalty mode too: uniform
+            # penalty rewards make the group-relative advantage degenerate, so
+            # there is nothing to learn from either way.
+            joined = " | ".join(repr(c) for c in candidates)
+            print(
+                f"  [train] ALL {len(candidates)} candidate programs for "
+                f"{coin_names[i]} unparseable — skipping example. "
+                f"Candidates: {joined}"
+            )
+            coin_biases = [-1.0] * len(candidates)
+            mask = torch.zeros(len(candidates), dtype=torch.bool)
+            if extra is not None:
+                extra["all_fail_examples"] = (
+                    int(extra.get("all_fail_examples", 0)) + 1
+                )
         biases.append(coin_biases)
         masks.append(mask)
+        if extra is not None:
+            extra["parse_examples_seen"] = (
+                int(extra.get("parse_examples_seen", 0)) + 1
+            )
+
+    if extra is not None:
+        # Running parse-health counters, queued for the trainer's per-batch
+        # wandb payload (see the log_metrics merge in ConsistencyTrainer).
+        extra["parse_valid_candidates"] = (
+            int(extra.get("parse_valid_candidates", 0)) + n_parsed
+        )
+        extra["parse_total_candidates"] = (
+            int(extra.get("parse_total_candidates", 0)) + n_candidates
+        )
+        rate = extra["parse_valid_candidates"] / max(
+            extra["parse_total_candidates"], 1
+        )
+        log_metrics = extra.setdefault("log_metrics", {})
+        log_metrics["train/program_parse_rate"] = rate
+        log_metrics["train/invalid_candidate_rate"] = 1.0 - rate
+        log_metrics["train/all_fail_examples"] = int(
+            extra.get("all_fail_examples", 0)
+        )
+        if invalid_reward is not None:
+            # Constant by construction (every invalid candidate gets the fixed
+            # penalty), logged so the run records penalty mode was active.
+            log_metrics["train/invalid_candidate_reward_mean"] = float(
+                invalid_reward
+            )
+
+    _check_all_fail_rate(extra)
 
     nlls = compute_nll(
         model,
@@ -167,17 +270,30 @@ def collect_behaviors(
     """Sample K rollouts per coin. Shapes mirror collect_explanations: the
     trainer detects the [B][K] form and anchors the explanation update on the
     highest-likelihood rollout."""
+    # Per-step derived seed for the same reason as in collect_explanations.
+    step = int(extra.get("behaviors_sampling_step", 0)) if extra is not None else 0
+    if extra is not None:
+        extra["behaviors_sampling_step"] = step + 1
+    seed = (
+        derive_seed(int(cfg.seed), "behaviors", step)
+        if getattr(cfg, "seed", None) is not None
+        else None
+    )
+
     behaviors, _ = sample_k_conts_gen(
         model,
         tokenizer,
         prompts=behavior_prompts,
         k=cfg.sampling.n_beams,
-        max_new_tokens=cfg.sampling.max_new_tokens,
+        # Rollouts get their own budget: the prompts ask for 100 flips, which
+        # is ~200 tokens ("H " per flip), so the 150-token program cap would
+        # silently truncate every rollout to ~75 flips.
+        max_new_tokens=int(getattr(cfg.sampling, "rollout_max_new_tokens", 200)),
         temperature=cfg.sampling.temp,
         top_p=cfg.sampling.top_p,
         greedily=False,
         batch_size=cfg.sampling.num_cands,
-        seed=cfg.seed,
+        seed=seed,
     )
 
     behavior_nlls = compute_nll(
@@ -205,6 +321,13 @@ def phi(behaviors, explanations, model, tokenizer, cfg, extra=None) -> torch.Ten
     """
     eps = 1e-6
 
+    # See collect_explanations: in penalty mode an unparseable candidate stays
+    # in the group and earns this fixed reward. A valid program's reward is a
+    # per-flip log likelihood bounded below by log(eps) ~= -13.8, so the
+    # configured penalty must sit strictly below that to guarantee a negative
+    # group-relative advantage.
+    invalid_reward = getattr(cfg.learning, "invalid_candidate_reward", None)
+
     if isinstance(behaviors[0], str):
         behaviors = [[b] for b in behaviors]
 
@@ -222,6 +345,12 @@ def phi(behaviors, explanations, model, tokenizer, cfg, extra=None) -> torch.Ten
 
         row = []
         for k in range(K):
+            stated = float(expl_i[k])
+            if invalid_reward is not None and stated < 0.0:
+                # Unparseable candidate (placeholder bias -1.0) kept in the
+                # group: fixed penalty, independent of the rollout.
+                row.append(float(invalid_reward))
+                continue
             heads = beh_i[k].count("H")
             tails = beh_i[k].count("T")
             n = heads + tails
@@ -229,10 +358,11 @@ def phi(behaviors, explanations, model, tokenizer, cfg, extra=None) -> torch.Ten
                 # Nothing was sampled that looks like a flip; no signal either way.
                 row.append(0.0)
                 continue
-            # Invalid programs carry a placeholder bias and are masked out by the
-            # trainer, but the reward is still computed for shape, so clamp into
-            # the open interval to keep the log finite.
-            p = min(max(float(expl_i[k]), eps), 1 - eps)
+            # In legacy masking mode invalid programs carry a placeholder bias
+            # and are masked out by the trainer, but the reward is still
+            # computed for shape, so clamp into the open interval to keep the
+            # log finite.
+            p = min(max(stated, eps), 1 - eps)
             row.append((heads * math.log(p) + tails * math.log(1 - p)) / n)
         rewards.append(row)
 
@@ -290,12 +420,15 @@ def eval_fn(model, tokenizer, val_loader, device, cfg, extra):
             names = [coin_from_prompt(p) for p in rollout_batch]
 
             # Behavior side: one rollout per coin, untruncated sampling so the
-            # empirical rate reflects the policy's actual distribution.
+            # empirical rate reflects the policy's actual distribution. Uses
+            # the rollout budget (2 x 100 flips), not the program cap.
             conts, _, gen_extra = sample_conts_gen(
                 model,
                 tokenizer,
                 rollout_batch,
-                max_new_tokens=cfg.sampling.max_new_tokens,
+                max_new_tokens=int(
+                    getattr(cfg.sampling, "rollout_max_new_tokens", 200)
+                ),
                 temperature=1.0,
                 top_p=1.0,
                 greedily=False,
@@ -306,6 +439,8 @@ def eval_fn(model, tokenizer, val_loader, device, cfg, extra):
             )
 
             # Explanation side: sample programs and take the first that parsed.
+            # Deliberately step-independent seed: every eval point draws the
+            # same sampling noise, so checkpoints are compared paired.
             programs, _ = sample_k_conts_gen(
                 model,
                 tokenizer,
@@ -316,7 +451,11 @@ def eval_fn(model, tokenizer, val_loader, device, cfg, extra):
                 top_p=cfg.sampling.top_p,
                 greedily=False,
                 batch_size=cfg.sampling.num_cands,
-                seed=cfg.seed,
+                seed=(
+                    derive_seed(int(cfg.seed), "eval")
+                    if getattr(cfg, "seed", None) is not None
+                    else None
+                ),
             )
 
             for i, name in enumerate(names):
@@ -408,7 +547,7 @@ def verbose_logging_coins(
         for k in range(len(explanations[i])):
             stated = explanations[i][k]
             adv = explanation_advantages[i, k].item()
-            flag = "" if stated >= 0 else "   (unparseable, masked)"
+            flag = "" if stated >= 0 else "   (unparseable)"
             print(f"    ({i},{k}) stated={stated:<7} advantage={adv: .4f}{flag}")
     print("=== end ===\n")
 
@@ -419,6 +558,13 @@ def verbose_logging_coins(
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:
+
+    # Config-driven determinism (default on). warn_only downgrades a missing
+    # deterministic kernel to a warning instead of a crash, and the cuBLAS
+    # workspace variable must be set before the first CUDA matmul.
+    if bool(getattr(cfg, "deterministic", True)):
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -477,8 +623,10 @@ def main(cfg: DictConfig) -> None:
             tokenizer,
             trainer.extra["train_rollout_prompts"],
             cache_path=results_dir / "behavior_anchors.json",
-            max_new_tokens=int(cfg.sampling.max_new_tokens),
-            seed=int(cfg.seed),
+            # Anchors are rollouts, so they take the rollout budget (2 x 100
+            # flips); the 150-token program cap would truncate them.
+            max_new_tokens=int(getattr(cfg.sampling, "rollout_max_new_tokens", 200)),
+            seed=int(cfg.seed) if getattr(cfg, "seed", None) is not None else None,
         )
         trainer.extra["train_dataset"].cont_training_data = anchors
         trainer.cons_cfg.cont_training_loss_fn = cont_training_loss

@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Bootstrap settings for every error bar in the deck. Fixed seed so a figure is
-# byte-identical across reruns.
+# byte-identical across reruns; 42 to match every other seed in the repo.
 NBOOT = 10000
-BOOTSTRAP_SEED = 0
+BOOTSTRAP_SEED = 42
 
 
 def apply_serif_font() -> None:

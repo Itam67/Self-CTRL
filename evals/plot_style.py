@@ -16,14 +16,23 @@ PALETTE = {
 
 
 # Per-run styling
+#
+# The moral entries are the paper's deck verbatim — `BAR_CONDITIONS` in the
+# original's exps/moral/evals/plot_style.py, which is the single source of truth
+# the paper's bar figures and its safety/simulatability scatter both read. The
+# scheme is deliberate and is NOT the generic PALETTE above:
+#   * the three λ runs take a light -> dark BLUE ramp, so λ reads off the fill;
+#   * the two introspective baselines take a GRAY ramp, with an edge tying each
+#     to the method it ablates (light blue -> Expl., dark navy -> Beh.);
+#   * the untrained base is the lightest gray, edge included.
 ROLE_STYLE = {
-    # moral domain
-    "base": (PALETTE["gray"], "#3f4347"),
-    "expl_baseline": (PALETTE["blue"], "#2f5470"),
-    "beh_baseline": (PALETTE["orange"], "#a85f33"),
-    "expl": (PALETTE["blue"], "#2f5470"),
-    "mixed": (PALETTE["purple"], "#5f4f74"),
-    "beh": (PALETTE["orange"], "#a85f33"),
+    # moral domain — (fill, edge) per the paper's BAR_CONDITIONS
+    "base": ("#D4D4D4", "#B7B7B7"),
+    "expl_baseline": ("#A8A8A8", "#94B3D9"),
+    "beh_baseline": ("#7C7C7C", "#263C68"),
+    "expl": ("#94B3D9", "#000000"),
+    "mixed": ("#557AA4", "#000000"),
+    "beh": ("#263C68", "#000000"),
     # coins domain
     "sft_baseline": (PALETTE["gray"], "#3f4347"),
     "cons_trained": (PALETTE["blue"], "#2f5470"),
