@@ -6,9 +6,9 @@
 #   3. Optional: set WANDB_MODE=online if W&B is configured on the cluster.
 
 #SBATCH --job-name=coins_fig
-#SBATCH --partition=lingo-h100
-#SBATCH --qos=lingo-main
-#SBATCH --account=lingo
+#SBATCH --partition=<CHANGE_ME>
+#SBATCH --qos=<CHANGE_ME>
+#SBATCH --account=<CHANGE_ME>
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
