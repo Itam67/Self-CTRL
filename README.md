@@ -84,3 +84,14 @@ The coin datasets are in `data/coins/`. SFT uses 24,000 coin demonstrations plus
 Set the checkpoints for each condition in `configs/figures/moral_llama.yaml` or `configs/figures/coins.yaml`, then run the plotting commands above. The plot scripts automatically run any missing evaluations and save the resulting figures to `results/final_figures/`.
 
 Useful flags are `--status`, `--plot-only`, `--only "<label>"`, `--force`, `--manifest`, and `--out`.
+
+## Citation
+
+```bibtex
+@article{pres2026selfctrl,
+    title={Self-CTRL: Self-Consistency Training with Reinforcement Learning},
+    author={Pres, Itamar and Ruis, Laura and Ghebreselassie, Melat and Li, Belinda Z. and Andreas, Jacob},
+    journal={arXiv preprint arXiv:2606.18327},
+    year={2026}
+}
+```
