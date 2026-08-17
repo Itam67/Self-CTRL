@@ -225,8 +225,9 @@ class ConsistencyTrainer:
                 _WANDB_AVAILABLE = False
                 print(f"wandb.init failed, continuing without logging: {e}")
 
-        # Initial evaluation
-        # self._evaluate(examples_seen)
+        # Initial evaluation: the pre-training anchor point of every
+        # consistency curve (the original ran it too).
+        self._evaluate(examples_seen)
 
         # Training loop
         self.model.train()

@@ -32,6 +32,7 @@ LAMBDA_ROLES = {"expl", "mixed", "beh"}
 # from the manifest are skipped, so a partial deck still draws what it has.
 LAMBDA_LINE_ORDER = ("expl", "mixed", "beh")
 LAMBDA_LINE_LABEL = "λ sweep (0 → 0.5 → 1.0)"
+PARETO_LINE_LABEL = "Pareto frontier"
 
 # Introspective baselines: drawn as a gray marker under the role-colored outline
 # of the method they ablate (dark blue -> ablates Expl., dark orange -> Beh.).
@@ -96,6 +97,31 @@ def _add_lambda_line(ax, points):
         ls="--",
         zorder=1,
         label=LAMBDA_LINE_LABEL,
+    )
+
+
+def _add_pareto_frontier(ax, points):
+    """points: list of (role, x, y), all conditions. Draw the frontier the
+    paper's scatter drew: walk the points from safest leftward, keeping each
+    point that improves on the best simulatability seen so far (sort by -x,
+    then -y; keep running-max y). Drawn alongside the λ sweep — the sweep shows
+    the path through λ, the frontier shows who is undominated."""
+    pts = sorted(((x, y) for _, x, y in points), key=lambda p: (-p[0], -p[1]))
+    frontier, best_y = [], None
+    for x, y in pts:
+        if best_y is None or y > best_y:
+            frontier.append((x, y))
+            best_y = y
+    if len(frontier) < 2:
+        return
+    ax.plot(
+        [p[0] for p in frontier],
+        [p[1] for p in frontier],
+        color="#555555",
+        lw=1.6,
+        ls=(0, (5, 2)),
+        zorder=1,
+        label=PARETO_LINE_LABEL,
     )
 
 
@@ -165,22 +191,41 @@ def build_figure(conditions, variant: str, out_path: Path):
                 y_err = [[yc[0]], [yc[1]]]
         drawn.append((cond.label, cond.role, x, y, x_err, y_err))
 
-    _add_lambda_line(ax, [(role, x, y) for _, role, x, y, *_ in drawn])
+    xy = [(role, x, y) for _, role, x, y, *_ in drawn]
+    _add_lambda_line(ax, xy)
+    _add_pareto_frontier(ax, xy)
     for label, role, x, y, x_err, y_err in drawn:
         _draw_point(ax, role, x, y, x_err=x_err, y_err=y_err)
         _label_point(ax, role, label, x, y)
 
-    # The λ line shown as a single-entry legend in the open upper-right.
+    # Both connecting lines in one legend in the open upper-right.
     handles, labels = ax.get_legend_handles_labels()
-    for h, l in zip(handles, labels):
-        if l == LAMBDA_LINE_LABEL:
-            ax.legend([h], [l], loc="upper right", frameon=False, fontsize=11)
-            break
+    line_entries = [
+        (h, l) for h, l in zip(handles, labels)
+        if l in (LAMBDA_LINE_LABEL, PARETO_LINE_LABEL)
+    ]
+    if line_entries:
+        ax.legend(
+            [h for h, _ in line_entries],
+            [l for _, l in line_entries],
+            loc="upper right",
+            frameon=False,
+            fontsize=11,
+        )
 
     ax.set_title("Safety vs. simulatability", fontsize=16)
     ax.set_xlim(0.78, 1.04)
     ax.set_xticks([0.80, 0.85, 0.90, 0.95, 1.00])
-    ax.set_ylim(-0.7 if variant == "ci" else -0.45, 0.95)
+    # y-limits follow the data (error-bar extents included), padded so the
+    # direct labels beside the extreme points stay inside the axes.
+    y_lo = min(
+        y - (y_err[0][0] if y_err else 0.0) for _, _, _, y, _, y_err in drawn
+    )
+    y_hi = max(
+        y + (y_err[1][0] if y_err else 0.0) for _, _, _, y, _, y_err in drawn
+    )
+    pad = max(0.08, 0.10 * (y_hi - y_lo))
+    ax.set_ylim(y_lo - pad, y_hi + pad)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out = (

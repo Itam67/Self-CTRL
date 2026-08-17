@@ -70,8 +70,10 @@ def _draw_panel(
     ax.set_xlim(-0.6, len(labels) - 0.4)
     ax.set_ylim(0, 1.12)
     ax.grid(False)
-    ax.tick_params(axis="both", labelsize=17)
-    ax.tick_params(axis="x", pad=6)
+    ax.tick_params(axis="y", labelsize=17)
+    # Smaller than the y ticks: six two-line condition labels share the x axis,
+    # and at 17pt adjacent first lines ("Expl. training" / "Mixed" / ...) collide.
+    ax.tick_params(axis="x", labelsize=13, pad=6)
     ax.set_xlabel(xlabel, fontsize=20, labelpad=10)
     ax.set_title(title, fontsize=23, pad=12)
     if show_yticklabels:

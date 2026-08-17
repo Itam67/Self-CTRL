@@ -14,7 +14,7 @@ print = functools.partial(print, flush=True)
 import torch
 from tqdm import tqdm
 
-from consistency.model_utils import load_model_tok, sample_conts_gen
+from consistency.model_utils import derive_seed, load_model_tok, sample_conts_gen
 from domains.moral.data import (
     BROAD_CATEGORY_HOLDOUT,
     CATEGORY_PARAPHRASES,
@@ -176,13 +176,18 @@ def _save_cache(cache_path, cache):
 
 
 # Elicit model rules for each category
-def generate_category_explanations(model, tokenizer, cfg):
+def generate_category_explanations(model, tokenizer, cfg, seed=None):
     """One category-level rule per evaluated category in CATEGORY_PARAPHRASES.
 
     The generic elicitation prompt depends only on the category paraphrase, so a
     single on-policy sample per category (temp/top_p from cfg, MORAL_SYSTEM_PROMPT
     — matching training-time elicitation) is the rule the counterfactuals anchor
     to. Returns (explanations, categories) aligned by index.
+
+    The sampled rules define the whole eval's item set (counterfactuals are
+    generated FROM them and the cf cache is keyed on their text), so `seed`
+    pins them: without it every rerun elicits fresh rules and produces a
+    disjoint, incomparable eval.
     """
     model.eval()
     # Whole-category holdouts are excluded — they're never seen in training and
@@ -192,17 +197,25 @@ def generate_category_explanations(model, tokenizer, cfg):
         GENERIC_EXPL_TEMPLATE.format(paraphrased=CATEGORY_PARAPHRASES[c])
         for c in categories
     ]
+    fork_devices = (
+        list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+    )
     with torch.no_grad():
-        explanations, _, _ = sample_conts_gen(
-            model,
-            tokenizer,
-            prompts,
-            max_new_tokens=cfg.max_program_tks,
-            temperature=cfg.temp,
-            top_p=cfg.top_p,
-            greedily=False,
-            system_prompts=[MORAL_SYSTEM_PROMPT] * len(prompts),
-        )
+        with torch.random.fork_rng(devices=fork_devices, enabled=seed is not None):
+            if seed is not None:
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed)
+            explanations, _, _ = sample_conts_gen(
+                model,
+                tokenizer,
+                prompts,
+                max_new_tokens=cfg.max_program_tks,
+                temperature=cfg.temp,
+                top_p=cfg.top_p,
+                greedily=False,
+                system_prompts=[MORAL_SYSTEM_PROMPT] * len(prompts),
+            )
     return explanations, categories
 
 
@@ -241,26 +254,41 @@ def build_cfs(
             f"  cf generation ({cf_model}, n={n_prompts}/side): "
             f"{len(to_run)} new, {n - len(to_run)} cached"
         )
-        with ThreadPoolExecutor(max_workers=JUDGE_WORKERS) as pool:
-            futs = {
-                pool.submit(
-                    generate_counterfactuals,
-                    json_caller,
-                    gt_principles[i],
-                    explanations[i],
-                    n_prompts,
-                ): i
-                for i in to_run
-            }
-            for fut in tqdm(
-                as_completed(futs), total=len(futs), desc="gemini/cf-gen", unit="cat"
-            ):
-                i = futs[fut]
-                try:
-                    cfs[i] = fut.result()
-                except Exception as e:
-                    print(f"  [cf-gen idx={i}] FAILED: {e}")
-                    cfs[i] = None
+        # Up to 3 rounds per unit: a transient Gemini failure must not silently
+        # shrink the category set (a dropped category changes this condition's
+        # denominator relative to every other condition in the figure).
+        pending = list(to_run)
+        for attempt in range(3):
+            if not pending:
+                break
+            if attempt:
+                print(f"  cf-gen retry {attempt}: {len(pending)} unit(s)")
+            failed = []
+            with ThreadPoolExecutor(max_workers=JUDGE_WORKERS) as pool:
+                futs = {
+                    pool.submit(
+                        generate_counterfactuals,
+                        json_caller,
+                        gt_principles[i],
+                        explanations[i],
+                        n_prompts,
+                    ): i
+                    for i in pending
+                }
+                for fut in tqdm(
+                    as_completed(futs),
+                    total=len(futs),
+                    desc="gemini/cf-gen",
+                    unit="cat",
+                ):
+                    i = futs[fut]
+                    try:
+                        cfs[i] = fut.result()
+                    except Exception as e:
+                        print(f"  [cf-gen idx={i} ({gt_principles[i]})] FAILED: {e}")
+                        cfs[i] = None
+                        failed.append(i)
+            pending = failed
         for i in range(n):
             if cfs[i] is None:
                 continue
@@ -274,7 +302,13 @@ def build_cfs(
 
     valid_idx = [i for i in range(n) if cfs[i] is not None]
     if len(valid_idx) < n:
-        print(f"  WARNING: dropped {n - len(valid_idx)} units (cf generation failed)")
+        dropped = [gt_principles[i] for i in range(n) if cfs[i] is None]
+        print(
+            f"  WARNING: dropped {n - len(valid_idx)} unit(s) after 3 cf-gen "
+            f"attempts: {dropped}. This condition's per-category averages now "
+            f"cover {len(valid_idx)}/{n} categories — not comparable to full-"
+            f"category conditions."
+        )
     return cfs, valid_idx
 
 
@@ -493,10 +527,15 @@ def run(
     model_name=BASE_MODEL,
     lora_path=None,
     out_dir=None,
+    seed=42,
 ):
     """out_dir overrides the derived results location (the figure scripts use it
     to keep every condition's metrics in one canonical tree). It addresses a
-    single checkpoint, so ckpt_filter must select exactly one."""
+    single checkpoint, so ckpt_filter must select exactly one.
+
+    seed pins the rule elicitation per checkpoint (derived per step); the
+    sampled rules are also persisted next to the metrics so the eval's item
+    provenance is on disk. Pass seed=None for the legacy unseeded behavior."""
     if not os.environ.get("GOOGLE_CLOUD_PROJECT"):
         raise RuntimeError("GOOGLE_CLOUD_PROJECT is not set (needed for Gemini).")
 
@@ -573,7 +612,22 @@ def run(
 
     def _eval_one(model_obj, tokenizer, snap_dir, step):
         model_obj.eval()
-        explanations, gts = generate_category_explanations(model_obj, tokenizer, cfg)
+        rule_seed = None if seed is None else derive_seed(seed, "cf_rules", step)
+        explanations, gts = generate_category_explanations(
+            model_obj, tokenizer, cfg, seed=rule_seed
+        )
+        with open(snap_dir / f"cf_rules{suffix}.json", "w") as f:
+            json.dump(
+                {
+                    "examples_seen": step,
+                    "base_model_name": model_name,
+                    "seed": seed,
+                    "rule_seed": rule_seed,
+                    "rules": dict(zip(gts, explanations)),
+                },
+                f,
+                indent=2,
+            )
         cache_path = snap_dir / f"cf_consistency{suffix}_cache.json"
         cfs, valid_idx = build_cfs(
             explanations,

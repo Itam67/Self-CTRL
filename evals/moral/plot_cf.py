@@ -28,18 +28,22 @@ REQUIRES = ("cf",)
 BAR_LW = 1.4
 
 
-def _load_cf_metrics(run_dir):
+def _load_cf_metrics(run_dir, filename):
     """Load the per-category cf metrics block from a condition directory.
 
-    The eval filename carries a model slug + N (cf_consistency_<slug>_n<N>_percat
-    .json), so glob the stable suffix and take the single match (newest by mtime
-    if several variants are present)."""
-    matches = glob.glob(str(Path(run_dir) / "cf_consistency_*_percat.json"))
-    matches = [m for m in matches if not m.endswith("_cache.json")]
-    if not matches:
-        raise FileNotFoundError(f"no cf_consistency_*_percat.json under {run_dir}")
-    matches.sort(key=lambda m: Path(m).stat().st_mtime)
-    with open(matches[-1]) as f:
+    `filename` is the manifest's exact cf filename (mf.cf_filename()), so every
+    condition is read at the manifest's (cf_model, n) — a stale variant on disk
+    can never put one bar on different eval settings than the others."""
+    path = Path(run_dir) / filename
+    if not path.exists():
+        others = [
+            Path(m).name
+            for m in glob.glob(str(Path(run_dir) / "cf_consistency_*_percat.json"))
+            if not m.endswith("_cache.json")
+        ]
+        hint = f" (found other variants: {others})" if others else ""
+        raise FileNotFoundError(f"no {filename} under {run_dir}{hint}")
+    with open(path) as f:
         return json.load(f)["metrics"]
 
 
@@ -71,7 +75,14 @@ def main():
     run_dirs = [c.results_dir for c in conditions]
     colors = [role_style(c.role) for c in conditions]
 
-    mets = [_load_cf_metrics(d) for d in run_dirs]
+    mets = [_load_cf_metrics(d, mf.cf_filename()) for d in run_dirs]
+    # A condition that lost categories to cf-generation failures averages over
+    # a smaller category set — mark its label so the bars can't read as
+    # like-for-like.
+    labels = [
+        f"{l}*" if m.get("n_dropped") else l for l, m in zip(labels, mets)
+    ]
+    dropped_any = any(m.get("n_dropped") for m in mets)
     refuse = [m["refuse_accuracy"] for m in mets]
     comply = [m["comply_accuracy_relaxed"] for m in mets]
     refuse_n = [m.get("n_refuse_prompts") for m in mets]
@@ -168,6 +179,17 @@ def main():
         fontsize=17,
         frameon=False,
     )
+    if dropped_any:
+        fig.text(
+            0.01,
+            0.01,
+            "* averages over fewer categories (counterfactual generation "
+            "failed for the missing ones) — not directly comparable",
+            ha="left",
+            va="bottom",
+            fontsize=12,
+            color="#7c2d2d",
+        )
 
     out_path = Path(args.out) if args.out else mf.figures_dir / DEFAULT_OUT_NAME
     out_path.parent.mkdir(parents=True, exist_ok=True)

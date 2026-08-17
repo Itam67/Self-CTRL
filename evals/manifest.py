@@ -379,6 +379,7 @@ def _run_cf(cond, mf):
         model_name=mf.model_name,
         lora_path=cond.lora_path,
         out_dir=cond.results_dir,
+        seed=int(cfg.get("seed", 42)),
     )
 
 

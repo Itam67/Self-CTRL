@@ -88,10 +88,14 @@ Useful flags are `--status`, `--plot-only`, `--only "<label>"`, `--force`, `--ma
 ## Citation
 
 ```bibtex
-@article{pres2026selfctrl,
-    title={Self-CTRL: Self-Consistency Training with Reinforcement Learning},
-    author={Pres, Itamar and Ruis, Laura and Ghebreselassie, Melat and Li, Belinda Z. and Andreas, Jacob},
-    journal={arXiv preprint arXiv:2606.18327},
-    year={2026}
+@misc{pres2026selfctrl,
+  title         = {Self-CTRL: Self-Consistency Training with Reinforcement Learning},
+  author        = {Pres, Itamar and Ruis, Laura and Ghebreselassie, Melat and Li, Belinda Z. and Andreas, Jacob},
+  year          = {2026},
+  eprint        = {2606.18327},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  doi           = {10.48550/arXiv.2606.18327},
+  url           = {https://arxiv.org/abs/2606.18327},
 }
 ```

@@ -35,6 +35,8 @@ from domains.moral.data import (
 from domains.moral.judges import (
     ETHICAL_FRAMEWORKS,
     CLASSIFICATION_TEMPLATE,
+    CONTENT_ENGAGEMENT_TEMPLATE,
+    DELIVERY_ENGAGEMENT_TEMPLATE,
     ENGAGEMENT_TEMPLATE,
     MORAL_SYSTEM_PROMPT,
     soft_score_compliance,
@@ -318,19 +320,42 @@ def engagement_juror(
     device = next(model.parameters()).device
     B = len(behavior_prompts)
 
+    # "legacy" = the original rule-aware template (saturates ~1.0, no gradient);
+    # "content" = CONTENT_ENGAGEMENT_TEMPLATE (delivery + inline harm clause);
+    # "delivery" = DELIVERY_ENGAGEMENT_TEMPLATE (pure extraction test, no
+    # normative clause — best probe-measured within-group separation).
+    variant = str(getattr(cfg.learning, "engagement_judge", "legacy"))
+    if variant not in ("legacy", "content", "delivery"):
+        raise ValueError(
+            f"learning.engagement_judge={variant!r}: use legacy|content|delivery"
+        )
+
     all_user_prompts = []
     k_per_examples = []
     for i in range(B):
         K = len(behaviors[i])
         k_per_examples.append(K)
         for k in range(K):
-            all_user_prompts.append(
-                ENGAGEMENT_TEMPLATE.format(
-                    principle=explanations[i][k],
-                    prompt=behavior_prompts[i],
-                    response=behaviors[i][k],
+            if variant in ("content", "delivery"):
+                tpl = (
+                    DELIVERY_ENGAGEMENT_TEMPLATE
+                    if variant == "delivery"
+                    else CONTENT_ENGAGEMENT_TEMPLATE
                 )
-            )
+                all_user_prompts.append(
+                    tpl.format(
+                        prompt=behavior_prompts[i],
+                        response=behaviors[i][k],
+                    )
+                )
+            else:
+                all_user_prompts.append(
+                    ENGAGEMENT_TEMPLATE.format(
+                        principle=explanations[i][k],
+                        prompt=behavior_prompts[i],
+                        response=behaviors[i][k],
+                    )
+                )
 
     adapter_ctx = (
         model.disable_adapter() if hasattr(model, "disable_adapter") else nullcontext()
@@ -531,9 +556,10 @@ def verbose_logging_moral(
     def _print_candidates(
         title, i, items, rewards, advantages, nlls, best_note, signal
     ):
-        # rewards/advantages are None when this side wasn't updated (bw=0 or 1).
+        # rewards/advantages are None when this side wasn't updated (bw=0 or 1);
+        # its anchor is printed under the prompt instead.
         if rewards is None or advantages is None:
-            print(f"\n  {title}: (not updated this step)")
+            print(f"\n  {title}: (not updated this step; anchor shown under the prompt)")
             return
         best_k = nlls[i].argmin().item() if nlls is not None else None
         print(f"\n  {title} ({len(items)}):")
@@ -546,6 +572,18 @@ def verbose_logging_moral(
                 f"  logp/tok={logp:+.3f}{sig}  {items[k]}{marker}"
             )
 
+    def _anchor_line(items, nlls, i, label):
+        """The non-updated side's anchor (argmin mean-per-token NLL — the same
+        rule the trainer uses), printed under the prompt so the updated side's
+        consistency scores can be spot-checked against the text they were
+        judged against."""
+        if nlls is None or not isinstance(items, list) or not items:
+            return None
+        a = nlls[i].argmin().item()
+        return (
+            f"  Anchor {label} [{a}] (logp/tok={-nlls[i, a].item():+.3f}): {items[a]}"
+        )
+
     k_behaviors = isinstance(behaviors[0], list)
     for i in range(len(behavior_prompts)):
         print("=" * 80)
@@ -553,6 +591,14 @@ def verbose_logging_moral(
         print(
             f"  Request Category: {prompt_to_principle.get(behavior_prompts[i], '?')}"
         )
+        if explanation_rewards is None:  # bw == 1: explanation side is the anchor
+            line = _anchor_line(explanations[i], explanation_nlls, i, "explanation")
+            if line:
+                print(line)
+        if behavior_rewards is None and k_behaviors:  # bw == 0: behavior anchor
+            line = _anchor_line(behaviors[i], behavior_nlls, i, "behavior")
+            if line:
+                print(line)
 
         if k_behaviors:
             _print_candidates(
