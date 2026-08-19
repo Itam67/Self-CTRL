@@ -60,7 +60,14 @@ SHOW_CI = True
 
 
 def main():
-    args = figure_argparser(__doc__.split("\n\n", 1)[0]).parse_args()
+    p = figure_argparser(__doc__.split("\n\n", 1)[0])
+    p.add_argument(
+        "--no-dropped-marks",
+        action="store_true",
+        help="Hide the '*' label mark and footnote on conditions whose CF eval "
+        "dropped categories (state the denominator caveat in the caption instead).",
+    )
+    args = p.parse_args()
     prepared = prepare_figure(args, REQUIRES)
     if prepared is None:
         return
@@ -78,11 +85,15 @@ def main():
     mets = [_load_cf_metrics(d, mf.cf_filename()) for d in run_dirs]
     # A condition that lost categories to cf-generation failures averages over
     # a smaller category set — mark its label so the bars can't read as
-    # like-for-like.
-    labels = [
-        f"{l}*" if m.get("n_dropped") else l for l, m in zip(labels, mets)
-    ]
-    dropped_any = any(m.get("n_dropped") for m in mets)
+    # like-for-like. --no-dropped-marks hides the annotation (e.g. for
+    # presentation copies; the denominator caveat then lives in the caption).
+    if not args.no_dropped_marks:
+        labels = [
+            f"{l}*" if m.get("n_dropped") else l for l, m in zip(labels, mets)
+        ]
+    dropped_any = (
+        any(m.get("n_dropped") for m in mets) and not args.no_dropped_marks
+    )
     refuse = [m["refuse_accuracy"] for m in mets]
     comply = [m["comply_accuracy_relaxed"] for m in mets]
     refuse_n = [m.get("n_refuse_prompts") for m in mets]

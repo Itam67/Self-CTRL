@@ -9,9 +9,16 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
-from evals.manifest import figure_argparser, prepare_figure
-from evals.figure_utils import apply_serif_font, load_metrics, prop_ci
+from evals.manifest import REPO_ROOT, figure_argparser, prepare_figure
+from evals.figure_utils import (
+    BOOTSTRAP_SEED,
+    NBOOT,
+    apply_serif_font,
+    load_metrics,
+    prop_ci,
+)
 from evals.plot_style import apply_style, role_style
 
 DEFAULT_OUT_NAME = "safety_vs_simulatability_scatter.pdf"
@@ -100,6 +107,96 @@ def _add_lambda_line(ax, points):
     )
 
 
+_RELAXED_BINARY = {
+    "full_compliance": "comply",
+    "partial_refusal": "comply",  # relaxed mapping, matching nsg_relaxed
+    "full_refusal": "refuse",
+}
+
+
+def _nsg_bootstrap_ci(cond, mf, point):
+    """95% CI for NSG-relaxed via a paired percentile bootstrap over prompts.
+
+    NSG = (a_we - a_zs) / (1 - a_zs) is a ratio of two accuracies measured on
+    the SAME prompts — not a k-of-n proportion, so prop_ci's binomial model is
+    the wrong family (and clamps negative NSG, which this figure expects).
+    Resampling prompts and recomputing the whole statistic per resample keeps
+    the two arms' dependence intact. Returns (lo_err, hi_err) or None when the
+    per-item records aren't on disk."""
+    ambig = cond.nsg_metrics_path.parent
+    gemini_model = mf.eval_cfg.get("nsg", {}).get("gemini_model", "gemini-2.5-flash")
+    zs_path = REPO_ROOT / "evals/moral/ambiguous_cache/zero_shot_predictions.json"
+    try:
+        gt = json.load(open(ambig / "gt_classifications.json"))["classifications"]
+        pe = json.load(open(ambig / "predictions_with_expl.json"))["predictions"]
+        zs = json.load(open(zs_path))[gemini_model]["predictions"]
+    except (FileNotFoundError, KeyError):
+        return None
+
+    we_ok, zs_ok = [], []
+    for cat, labels in gt.items():
+        for i, lab in enumerate(labels):
+            b = _RELAXED_BINARY.get(lab)
+            if b is None:  # judge-failed / unparseable gt — excluded from both arms
+                continue
+            try:
+                we_ok.append(pe[cat][i] == b)
+                zs_ok.append(zs[cat][i] == b)
+            except (KeyError, IndexError):
+                continue
+    n = len(we_ok)
+    if n < 2:
+        return None
+    we_ok = np.asarray(we_ok, dtype=float)
+    zs_ok = np.asarray(zs_ok, dtype=float)
+
+    # Sanity: the point estimate must reproduce from the records we resample.
+    a_we, a_zs = we_ok.mean(), zs_ok.mean()
+    check = (a_we - a_zs) / max(1.0 - a_zs, 1e-9)
+    if abs(check - point) > 0.02:
+        print(
+            f"  WARNING: per-item NSG {check:.4f} != metrics {point:.4f} for "
+            f"{ambig} — skipping its CI"
+        )
+        return None
+
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    idx = rng.integers(0, n, size=(NBOOT, n))
+    bw = we_ok[idx].mean(axis=1)
+    bz = zs_ok[idx].mean(axis=1)
+    boot = (bw - bz) / np.clip(1.0 - bz, 1e-9, None)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return max(0.0, point - float(lo)), max(0.0, float(hi) - point)
+
+
+def _repel_labels(fig, ax, texts, max_passes=8):
+    """Nudge direct labels apart vertically until their bounding boxes stop
+    overlapping (data positions of the markers are untouched)."""
+    for _ in range(max_passes):
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        boxes = [t.get_window_extent(renderer=renderer) for t in texts]
+        moved = False
+        for i in range(len(texts)):
+            for j in range(i + 1, len(texts)):
+                bi, bj = boxes[i], boxes[j]
+                if bi.overlaps(bj):
+                    # Push the lower one further down by the overlap + padding.
+                    lower, upper = (i, j) if bi.y0 <= bj.y0 else (j, i)
+                    overlap = boxes[upper].y0 - boxes[lower].y1  # negative
+                    shift_px = overlap - 3
+                    t = texts[lower]
+                    x, y = t.get_position()
+                    inv = ax.transData.inverted()
+                    dy = (
+                        inv.transform((0, 0))[1] - inv.transform((0, -shift_px))[1]
+                    )
+                    t.set_position((x, y - abs(dy)))
+                    moved = True
+        if not moved:
+            return
+
+
 def _add_pareto_frontier(ax, points):
     """points: list of (role, x, y), all conditions. Draw the frontier the
     paper's scatter drew: walk the points from safest leftward, keeping each
@@ -155,7 +252,7 @@ def _draw_point(ax, role, x, y, x_err=None, y_err=None):
 
 def _label_point(ax, role, label, x, y):
     dx, dy, ha, va = _LABEL_OFFSETS[role]
-    ax.text(
+    return ax.text(
         x + dx,
         y + dy,
         label,
@@ -166,7 +263,7 @@ def _label_point(ax, role, label, x, y):
     )
 
 
-def build_figure(conditions, variant: str, out_path: Path):
+def build_figure(conditions, variant: str, out_path: Path, mf=None):
     """variant: "none" (point estimates) or "ci" (bootstrap CI on both axes)."""
     apply_style()
     apply_serif_font()
@@ -183,10 +280,14 @@ def build_figure(conditions, variant: str, out_path: Path):
         y = nsg[NSG_KEY]
         x_err = y_err = None
         if variant == "ci":
+            # x is a k-of-n proportion (1 - ASR over n behaviors): binomial
+            # bootstrap is the right family there.
             xc = prop_ci(x, hb.get("n"), snap=False)
-            yc = prop_ci(y, nsg.get(NSG_N_KEY), snap=False)
             if xc is not None:
                 x_err = [[xc[0]], [xc[1]]]
+            # y (NSG) is a paired ratio statistic: paired percentile bootstrap
+            # over the per-prompt records (see _nsg_bootstrap_ci).
+            yc = _nsg_bootstrap_ci(cond, mf, y)
             if yc is not None:
                 y_err = [[yc[0]], [yc[1]]]
         drawn.append((cond.label, cond.role, x, y, x_err, y_err))
@@ -194,9 +295,10 @@ def build_figure(conditions, variant: str, out_path: Path):
     xy = [(role, x, y) for _, role, x, y, *_ in drawn]
     _add_lambda_line(ax, xy)
     _add_pareto_frontier(ax, xy)
+    texts = []
     for label, role, x, y, x_err, y_err in drawn:
         _draw_point(ax, role, x, y, x_err=x_err, y_err=y_err)
-        _label_point(ax, role, label, x, y)
+        texts.append(_label_point(ax, role, label, x, y))
 
     # Both connecting lines in one legend in the open upper-right.
     handles, labels = ax.get_legend_handles_labels()
@@ -225,7 +327,14 @@ def build_figure(conditions, variant: str, out_path: Path):
         y + (y_err[1][0] if y_err else 0.0) for _, _, _, y, _, y_err in drawn
     )
     pad = max(0.08, 0.10 * (y_hi - y_lo))
-    ax.set_ylim(y_lo - pad, y_hi + pad)
+    # Extra headroom at the top: the legend lives in the upper right, and the
+    # high-λ conditions (safety ≈ 1) put points and labels under that corner —
+    # the reserved band keeps them from colliding with it.
+    pad_top = max(0.22, 0.25 * (y_hi - y_lo))
+    ax.set_ylim(y_lo - pad, y_hi + pad_top)
+
+    # With final limits in place, separate any colliding direct labels.
+    _repel_labels(fig, ax, texts)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out = (
@@ -259,7 +368,7 @@ def main():
     mf, conditions = prepared
 
     out_path = Path(args.out) if args.out else mf.figures_dir / DEFAULT_OUT_NAME
-    build_figure(conditions, args.variant, out_path)
+    build_figure(conditions, args.variant, out_path, mf=mf)
 
 
 if __name__ == "__main__":

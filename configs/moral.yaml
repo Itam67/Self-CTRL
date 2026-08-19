@@ -60,6 +60,12 @@ learning:
   # 0 = pure consistency reward.
   auxiliary_weight: ???
 
+  # Which engagement-judge template scores that signal (domains/moral/judges.py):
+  # "legacy" = the paper's rule-aware template; "delivery" = the content-
+  # delivery/extraction judge (2026-08 redesign); "content" = its harm-clause
+  # ablation. Only matters when auxiliary_weight > 0.
+  engagement_judge: legacy
+
   # Weight on the KL anchor holding the side that ISN'T being updated near the
   # base policy. Distinct from cont_training — see domains/moral/train.py.
   untouched_side_kl_weight: ???
