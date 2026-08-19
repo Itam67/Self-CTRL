@@ -40,9 +40,8 @@ We currently have one config per a training type each writing to its own
 
 λ (`learning.bw`) picks which side is updated; `cont` weights the
 continued-training SFT loss that holds general capability in place; `aux`
-weights the engagement signal mixed into the jury reward; `ukl` weights the KL
-anchor on the side *not* being updated. The explanation run uses no SFT loss, so
-its `cont_training` data block is switched off rather than weighted to zero.
+weights the engagement signal mixed into the jury reward for λ!=0; `ukl` weights the KL
+anchor on the side *not* being updated. 
 
 Adapters get saved to `models/moral/<run>/ckpt_<step>/`, checkpoints and metrics to
 `results/moral/<run>/`.
@@ -63,13 +62,9 @@ context; then we apply Self-CTRL, so it learns to *state* that bias.
 | Self-CTRL | `python domains/coins/train.py` | lr 1e-5, batch 10, K=10, λ=0, λ_KL=0.3 |
 | Oracle | `python domains/coins/sft.py --config-name coins_sft_oracle` | as SFT, on the 90-coin corpus |
 
-The oracle is the paper's ground-truth-supervision upper bound and the third
-column of the figure. It is trained with the same SFT recipe, but its corpus gives program
-supervision for 90 coins instead of 50, so the consistency coins are handed
-their biases rather than having to discover them. The same 10 coins are held
-out, so that column stays comparable across all three conditions.
+The oracle shows how much held-out generalization is possible when the supervision signal is increased directly. It is trained with the same SFT recipe, but its corpus gives program supervision for 90 coins instead of 50. The consistency coins are handed their biases rather than having to discover them.
 
-The coin datasets are in `data/coins/`. SFT uses 24,000 coin demonstrations plus 5,000 streamed OpenCodeInstruct examples. The paper's splits contain 50 fully supervised coins, 40 rollout-only coins used for consistency training, and 10 held-out coins.
+The coin datasets are in `data/coins/`. 
 
 ## Applying Self-CTRL to new domains
 
