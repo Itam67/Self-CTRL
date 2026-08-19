@@ -4,8 +4,7 @@ Self-Consistency Training with Reinforcement Learning
 [![arXiv](https://img.shields.io/badge/arXiv-2606.18327-b31b1b.svg)](https://arxiv.org/abs/2606.18327)
 
 This repository contains code for "[Self-CTRL: Self-Consistency Training with
-Reinforcement Learning](https://arxiv.org/abs/2606.18327)" by Itamar Pres, Laura
-Ruis, Melat Ghebreselassie, Belinda Z. Li, and Jacob Andreas.
+Reinforcement Learning](https://arxiv.org/abs/2606.18327)".
 
 Self-CTRL trains language models to make their stated *explanations* of their behavior consistent with the *behavior* they actually produce.
 
