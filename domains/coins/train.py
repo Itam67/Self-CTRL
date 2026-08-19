@@ -559,9 +559,7 @@ def verbose_logging_coins(
 )
 def main(cfg: DictConfig) -> None:
 
-    # Config-driven determinism (default on). warn_only downgrades a missing
-    # deterministic kernel to a warning instead of a crash, and the cuBLAS
-    # workspace variable must be set before the first CUDA matmul.
+    # Config-driven determinism (default on)
     if bool(getattr(cfg, "deterministic", True)):
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         torch.use_deterministic_algorithms(True, warn_only=True)
@@ -612,10 +610,7 @@ def main(cfg: DictConfig) -> None:
         cons_cfg=cons_cfg,
     )
 
-    # Behavior-preserving anchors: sampled ONCE from the SFT-initialised policy,
-    # before any update, then frozen. Adding their NLL under the training policy
-    # is a Monte Carlo forward-KL anchor keeping the rollout distribution from
-    # drifting while the explanation side moves.
+    # Behavior-preserving anchors
     if float(cfg.learning.cont_training_loss_weight) > 0:
         results_dir = Path(getattr(cfg.learning, "results_dir", cfg.learning.save_dir))
         anchors = ensure_behavior_anchors(
