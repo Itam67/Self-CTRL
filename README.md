@@ -14,6 +14,7 @@ Self-CTRL trains language models to make their stated *explanations* of their be
 | `domains/moral/` | a stated safety policy | a response to a request | jury of LM judges |
 | `domains/coins/` | a Python program stating a coin's bias | a rollout of H/T flips | Bernoulli log-likelihood |
 
+We include instructions for adapting this codebase to new domains/problems. 
 ## Setup
 
 ```bash
@@ -44,7 +45,7 @@ weights the engagement signal mixed into the jury reward; `ukl` weights the KL
 anchor on the side *not* being updated. The explanation run uses no SFT loss, so
 its `cont_training` data block is switched off rather than weighted to zero.
 
-Adapters get saved to `models/moral/<run>/ckpt_<step>/`, eval snapshots and metrics to
+Adapters get saved to `models/moral/<run>/ckpt_<step>/`, checkpoints and metrics to
 `results/moral/<run>/`.
 
 The main trainer's reward is the consistency jury. Explanation and behavior are
@@ -71,35 +72,34 @@ out, so that column stays comparable across all three conditions.
 
 The coin datasets are in `data/coins/`. SFT uses 24,000 coin demonstrations plus 5,000 streamed OpenCodeInstruct examples. The paper's splits contain 50 fully supervised coins, 40 rollout-only coins used for consistency training, and 10 held-out coins.
 
-## Training on a new domain
+## Applying Self-CTRL to new domains
 
-The trainer (`consistency/trainer.py`) is domain-agnostic: a domain is a
-`ConsistencyConfig` of callables plus a Hydra config, and `domains/coins/` and
-`domains/moral/` are two complete examples. To apply Self-CTRL to a new
+The core trainer (`consistency/trainer.py`) is domain agnostic. To instantiate a new domain requires creating a 
+`ConsistencyConfig` of callables plus a Hydra config. Currently, `domains/coins/` and
+`domains/moral/` are two complete examples. 
+
+To apply Self-CTRL to a new
 problem, define what an *explanation* and a *behavior* are for your task, then
 provide:
 
 | Callable | Signature | Returns |
 | --- | --- | --- |
-| `load_data` | `(cfg)` | train/val loaders yielding (behavior_prompts, explanation_prompts) batches, plus an `extra` dict |
-| `collect_behaviors` | `(model, tok, prompts, cfg, extra)` | behaviors `[B][K]` (or `[B]` anchors), their NLLs `[B, K]`, `extra` |
+| `load_data` | `(cfg)` | train/val loaders yielding (behavior_prompts, explanation_prompts) batches, plus an `extra` dict to store additional domain specific information |
+| `collect_behaviors` | `(model, tok, prompts, cfg, extra)` | behaviors `[B][K]`, their NLLs `[B, K]`, `extra` |
 | `collect_explanations` | `(model, tok, prompts, cfg, extra)` | explanations `[B][K]`, NLLs `[B, K]`, `valid_mask` (or `None`), `extra` |
 | `reward_fn` | `(behaviors, explanations, model, tok, cfg, extra)` | rewards `[B, K]` scoring behavior–explanation consistency |
 
 `cont_training_loss_fn`, `untouched_kl_fn`, `eval_fn`, and `verbose_logging`
-are optional regularizers and hooks. The reward is the domain's core modeling
-decision: coins uses the Bernoulli log-likelihood of rollouts under the stated
-program; moral uses an LM jury. Everything else — GRPO with group whitening,
-λ-weighted explanation/behavior updates, checkpointing, wandb — comes from the
-trainer.
+are optional regularizers and hooks. 
 
 ```python
 cons_cfg = ConsistencyConfig(load_data=..., collect_behaviors=...,
                              collect_explanations=..., reward_fn=...)
+
 ConsistencyTrainer(model, tokenizer, optimizer, device, cfg, cons_cfg).train()
 ```
 
-Config-wise, inherit the shared keys (`learning.bw` = λ, `sampling.*`, K via
+Config-wise, you can inherit the shared keys (`learning.bw` = λ, `sampling.*`, K via
 `n_beams`, `save_dir`/`results_dir`) from an existing domain's YAML — see
 `configs/coins.yaml` or `configs/moral.yaml` for the annotated set.
 
