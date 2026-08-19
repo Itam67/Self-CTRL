@@ -27,7 +27,7 @@ Run every command from the repo root. Gemini authentication is only required for
 
 ## Moral domain training
 
-One config per condition, at the paper's settings, each writing to its own
+We currently have one config per a training type each writing to its own
 `save_dir` / `results_dir`:
 
 | Condition | Command | λ | cont | aux | ukl |
