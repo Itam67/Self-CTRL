@@ -35,8 +35,6 @@ from domains.moral.data import (
 from domains.moral.judges import (
     ETHICAL_FRAMEWORKS,
     CLASSIFICATION_TEMPLATE,
-    CONTENT_ENGAGEMENT_TEMPLATE,
-    DELIVERY_ENGAGEMENT_TEMPLATE,
     ENGAGEMENT_TEMPLATE,
     MORAL_SYSTEM_PROMPT,
     soft_score_compliance,
@@ -320,42 +318,21 @@ def engagement_juror(
     device = next(model.parameters()).device
     B = len(behavior_prompts)
 
-    # "legacy" = the original rule-aware template (saturates ~1.0, no gradient);
-    # "content" = CONTENT_ENGAGEMENT_TEMPLATE (delivery + inline harm clause);
-    # "delivery" = DELIVERY_ENGAGEMENT_TEMPLATE (pure extraction test, no
-    # normative clause — best probe-measured within-group separation).
-    variant = str(getattr(cfg.learning, "engagement_judge", "legacy"))
-    if variant not in ("legacy", "content", "delivery"):
-        raise ValueError(
-            f"learning.engagement_judge={variant!r}: use legacy|content|delivery"
-        )
-
+    # The delivery judge takes only (prompt, response) — deliberately not the
+    # explanation: showing the policy's own rule was the channel that let
+    # refusals justify themselves and saturated the original judge.
     all_user_prompts = []
     k_per_examples = []
     for i in range(B):
         K = len(behaviors[i])
         k_per_examples.append(K)
         for k in range(K):
-            if variant in ("content", "delivery"):
-                tpl = (
-                    DELIVERY_ENGAGEMENT_TEMPLATE
-                    if variant == "delivery"
-                    else CONTENT_ENGAGEMENT_TEMPLATE
+            all_user_prompts.append(
+                ENGAGEMENT_TEMPLATE.format(
+                    prompt=behavior_prompts[i],
+                    response=behaviors[i][k],
                 )
-                all_user_prompts.append(
-                    tpl.format(
-                        prompt=behavior_prompts[i],
-                        response=behaviors[i][k],
-                    )
-                )
-            else:
-                all_user_prompts.append(
-                    ENGAGEMENT_TEMPLATE.format(
-                        principle=explanations[i][k],
-                        prompt=behavior_prompts[i],
-                        response=behaviors[i][k],
-                    )
-                )
+            )
 
     adapter_ctx = (
         model.disable_adapter() if hasattr(model, "disable_adapter") else nullcontext()

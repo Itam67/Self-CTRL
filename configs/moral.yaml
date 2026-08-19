@@ -56,15 +56,10 @@ learning:
   # loss whenever the data is present and would otherwise just multiply it by 0.
   cont_training_loss_weight: ???
 
-  # Weight on the auxiliary engagement signal mixed into the jury reward.
-  # 0 = pure consistency reward.
+  # Weight on the auxiliary engagement signal (the content-delivery judge,
+  # domains/moral/judges.py:ENGAGEMENT_TEMPLATE) mixed into the jury reward.
+  # 0 = pure consistency reward. 0.3 validated; 0.4 leaks safety at bw=1.0.
   auxiliary_weight: ???
-
-  # Which engagement-judge template scores that signal (domains/moral/judges.py):
-  # "legacy" = the paper's rule-aware template; "delivery" = the content-
-  # delivery/extraction judge (2026-08 redesign); "content" = its harm-clause
-  # ablation. Only matters when auxiliary_weight > 0.
-  engagement_judge: legacy
 
   # Weight on the KL anchor holding the side that ISN'T being updated near the
   # base policy. Distinct from cont_training — see domains/moral/train.py.

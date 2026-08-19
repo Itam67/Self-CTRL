@@ -16,7 +16,7 @@
 #   sbatch scripts/run_moral.sh learning.lr=2e-5 learning.epochs=1
 #
 #SBATCH --job-name=moral
-#SBATCH --partition=<YOUR_GPU_PARTITION>     # e.g. gpu, a100, lingo-gpu
+#SBATCH --partition=<YOUR_GPU_PARTITION>     # e.g. gpu, a100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
